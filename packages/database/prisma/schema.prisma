@@ -56,6 +56,15 @@ model User {
   generatedDocuments GeneratedDocument[]
   customDashboards  CustomDashboard[]
 
+  // Integration relations
+  integrations          Integration[]       @relation("IntegrationCreator")
+  emailAccounts         EmailAccount[]      @relation("UserEmailAccounts")
+  aiConversations       AIConversation[]    @relation("UserAIConversations")
+  aiPromptTemplates     AIPromptTemplate[]  @relation("AIPromptCreator")
+  webhooks              Webhook[]           @relation("WebhookCreator")
+  incomingWebhooks      IncomingWebhook[]   @relation("IncomingWebhookCreator")
+  apiKeys               ApiKey[]            @relation("ApiKeyCreator")
+
   @@index([organizationId])
   @@index([email])
 }
@@ -144,6 +153,18 @@ model Organization {
   generatedDocuments GeneratedDocument[]
   customDashboards  CustomDashboard[]
 
+  // Integration relations
+  integrations          Integration[]
+  supplierPriceLists    SupplierPriceList[]
+  emailAccounts         EmailAccount[]
+  emails                Email[]
+  aiConfigurations      AIConfiguration[]
+  aiConversations       AIConversation[]
+  aiPromptTemplates     AIPromptTemplate[]
+  webhooks              Webhook[]
+  incomingWebhooks      IncomingWebhook[]
+  apiKeys               ApiKey[]
+
   @@index([slug])
 }
 
@@ -211,6 +232,9 @@ model Contact {
   // Projects & DDT
   projects        Project[]
   ddts            DDT[]
+
+  // Email integration
+  linkedEmails    Email[]   @relation("ContactEmails")
 
   @@index([organizationId])
   @@index([ownerId])
@@ -290,6 +314,9 @@ model Company {
   // Projects & DDT
   projects        Project[]
   ddts            DDT[]
+
+  // Email integration
+  linkedEmails    Email[]   @relation("CompanyEmails")
 
   @@index([organizationId])
   @@index([ownerId])
@@ -373,6 +400,9 @@ model Deal {
 
   // Project
   project         Project?
+
+  // Email integration
+  linkedEmails    Email[]   @relation("DealEmails")
 
   @@index([organizationId])
   @@index([pipelineId])
@@ -1081,6 +1111,9 @@ model Supplier {
   ddtInbound      DDT[]     @relation("SupplierDDT")
   projectCosts    ProjectCost[]
 
+  // External price lists
+  priceLists      SupplierPriceList[]
+
   @@index([organizationId])
   @@index([category])
   @@index([name])
@@ -1453,6 +1486,9 @@ model Project {
   quotes          Quote[]       @relation("ProjectQuotes")
   invoices        Invoice[]     @relation("ProjectInvoices")
   stockMovements  StockMovement[]
+
+  // Email integration
+  linkedEmails    Email[]       @relation("ProjectEmails")
 
   @@unique([organizationId, code])
   @@index([organizationId])
@@ -1907,4 +1943,787 @@ model CustomDashboard {
 
   @@index([organizationId])
   @@index([ownerId])
+}
+
+// ============================================
+// EXTERNAL INTEGRATIONS SYSTEM
+// Sistema flessibile per integrazioni esterne
+// ============================================
+
+// Master integration configuration
+model Integration {
+  id              String            @id @default(cuid())
+  name            String
+  type            IntegrationType
+  provider        String            // e.g., "microsoft", "openai", "custom", "replit"
+  description     String?
+  isActive        Boolean           @default(true)
+
+  // Authentication
+  authType        AuthType          @default(API_KEY)
+  apiKey          String?           // Encrypted
+  apiSecret       String?           // Encrypted
+  accessToken     String?           // Encrypted
+  refreshToken    String?           // Encrypted
+  tokenExpiresAt  DateTime?
+
+  // OAuth2 settings
+  clientId        String?
+  clientSecret    String?           // Encrypted
+  authUrl         String?
+  tokenUrl        String?
+  scopes          String[]          @default([])
+  redirectUri     String?
+
+  // Connection settings
+  baseUrl         String?
+  webhookUrl      String?
+  webhookSecret   String?           // Encrypted
+
+  // Configuration
+  config          Json?             // Custom configuration per integration
+  mapping         Json?             // Field mapping configuration
+  syncSettings    Json?             // Sync frequency, filters, etc.
+
+  // Status
+  status          IntegrationStatus @default(DISCONNECTED)
+  lastSyncAt      DateTime?
+  lastErrorAt     DateTime?
+  lastError       String?
+
+  // Metadata
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User              @relation("IntegrationCreator", fields: [createdById], references: [id])
+  createdById     String
+
+  // Child relations
+  syncLogs        IntegrationSyncLog[]
+  supplierPriceLists SupplierPriceList[]
+  emailAccounts   EmailAccount[]
+  webhooks        Webhook[]
+  aiConfigs       AIConfiguration[]
+
+  @@unique([organizationId, provider, name])
+  @@index([organizationId])
+  @@index([type])
+  @@index([provider])
+}
+
+enum IntegrationType {
+  EMAIL           // Email providers (Outlook, Gmail)
+  SUPPLIER_API    // Supplier price list APIs
+  AI_ASSISTANT    // AI services (OpenAI, Claude)
+  WEBHOOK         // Generic webhooks
+  ERP             // External ERP systems
+  ACCOUNTING      // Accounting software (Fatture in Cloud, etc.)
+  ECOMMERCE       // E-commerce platforms
+  CALENDAR        // Calendar sync
+  STORAGE         // Cloud storage (OneDrive, Google Drive)
+  COMMUNICATION   // Slack, Teams, etc.
+  CUSTOM          // Custom integrations
+}
+
+enum AuthType {
+  NONE
+  API_KEY
+  BASIC
+  BEARER
+  OAUTH2
+  OAUTH2_CLIENT_CREDENTIALS
+  CUSTOM
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  ERROR
+  EXPIRED
+  SUSPENDED
+}
+
+// Integration sync logs
+model IntegrationSyncLog {
+  id              String    @id @default(cuid())
+  syncType        String    // full, incremental, manual
+  status          String    // started, completed, failed
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  recordsProcessed Int       @default(0)
+  recordsCreated  Int       @default(0)
+  recordsUpdated  Int       @default(0)
+  recordsFailed   Int       @default(0)
+  errors          Json?     // Array of error details
+  details         Json?     // Additional sync details
+
+  // Relations
+  integration     Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  integrationId   String
+
+  @@index([integrationId])
+  @@index([startedAt])
+}
+
+// ============================================
+// SUPPLIER PRICE LISTS
+// Listini prezzi fornitori esterni
+// ============================================
+
+model SupplierPriceList {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  supplierName    String
+  currency        String    @default("EUR")
+
+  // API Configuration
+  apiEndpoint     String?
+  fetchFrequency  String    @default("daily") // hourly, daily, weekly, manual
+  lastFetchAt     DateTime?
+  nextFetchAt     DateTime?
+
+  // File import
+  importType      String?   // csv, xlsx, xml, json, api
+  fileUrl         String?
+  fileMapping     Json?     // Column/field mapping
+
+  // Status
+  isActive        Boolean   @default(true)
+  totalProducts   Int       @default(0)
+  lastUpdateAt    DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  integration     Integration? @relation(fields: [integrationId], references: [id])
+  integrationId   String?
+  supplier        Supplier?    @relation(fields: [supplierId], references: [id])
+  supplierId      String?
+
+  // Products in this price list
+  items           PriceListItem[]
+
+  @@index([organizationId])
+  @@index([supplierId])
+}
+
+model PriceListItem {
+  id              String    @id @default(cuid())
+  sku             String    // Supplier's SKU
+  name            String
+  description     String?
+  category        String?
+  brand           String?
+  manufacturer    String?
+
+  // Pricing
+  listPrice       Float
+  discountPercent Float?
+  netPrice        Float?
+  minQuantity     Int       @default(1)
+
+  // Stock info from supplier
+  availability    String?   // in_stock, out_of_stock, limited, etc.
+  leadTime        String?   // Estimated delivery time
+  stockQuantity   Int?
+
+  // Product details
+  unit            String    @default("PZ")
+  packaging       String?
+  weight          Float?
+  dimensions      Json?     // { length, width, height }
+
+  // Technical specs
+  specifications  Json?     // Technical specifications
+
+  // Links
+  productUrl      String?
+  imageUrl        String?
+  datasheet       String?   // PDF datasheet URL
+
+  // Matching to internal product
+  internalProductId String?
+
+  isActive        Boolean   @default(true)
+  lastUpdatedAt   DateTime  @default(now())
+
+  // Relations
+  priceList       SupplierPriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  priceListId     String
+
+  @@unique([priceListId, sku])
+  @@index([priceListId])
+  @@index([sku])
+  @@index([name])
+}
+
+// ============================================
+// EMAIL INTEGRATION (Outlook, Gmail, etc.)
+// Integrazione email con collegamento clienti
+// ============================================
+
+model EmailAccount {
+  id              String    @id @default(cuid())
+  email           String
+  displayName     String?
+  provider        EmailProvider
+
+  // OAuth tokens
+  accessToken     String?   // Encrypted
+  refreshToken    String?   // Encrypted
+  tokenExpiresAt  DateTime?
+
+  // Sync settings
+  syncEnabled     Boolean   @default(true)
+  syncFrequency   Int       @default(5) // minutes
+  syncFolders     String[]  @default(["INBOX"]) // Folders to sync
+  lastSyncAt      DateTime?
+
+  // Auto-linking settings
+  autoLinkEnabled Boolean   @default(true)
+  autoLinkRules   Json?     // Custom rules for auto-linking
+
+  // Status
+  isActive        Boolean   @default(true)
+  status          String    @default("disconnected")
+  lastError       String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  user            User      @relation("UserEmailAccounts", fields: [userId], references: [id])
+  userId          String
+  integration     Integration? @relation(fields: [integrationId], references: [id])
+  integrationId   String?
+
+  // Emails
+  emails          Email[]
+  folders         EmailFolder[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+enum EmailProvider {
+  OUTLOOK
+  GMAIL
+  IMAP
+  EXCHANGE
+}
+
+model EmailFolder {
+  id              String    @id @default(cuid())
+  externalId      String    // ID from email provider
+  name            String
+  parentId        String?
+  type            String?   // inbox, sent, drafts, trash, etc.
+  unreadCount     Int       @default(0)
+  totalCount      Int       @default(0)
+  syncEnabled     Boolean   @default(true)
+  lastSyncAt      DateTime?
+
+  // Relations
+  emailAccount    EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  emailAccountId  String
+  emails          Email[]
+
+  @@unique([emailAccountId, externalId])
+  @@index([emailAccountId])
+}
+
+model Email {
+  id              String    @id @default(cuid())
+  externalId      String    // Message ID from email provider
+  threadId        String?   // Conversation thread ID
+
+  // Email content
+  subject         String?
+  bodyPreview     String?   // First 200 chars
+  bodyHtml        String?   // Full HTML body
+  bodyText        String?   // Plain text body
+
+  // Addresses
+  fromAddress     String
+  fromName        String?
+  toAddresses     Json      // Array of { email, name }
+  ccAddresses     Json?     // Array of { email, name }
+  bccAddresses    Json?     // Array of { email, name }
+  replyTo         String?
+
+  // Metadata
+  receivedAt      DateTime
+  sentAt          DateTime?
+  isRead          Boolean   @default(false)
+  isStarred       Boolean   @default(false)
+  isDraft         Boolean   @default(false)
+  importance      String?   // low, normal, high
+  hasAttachments  Boolean   @default(false)
+
+  // Headers
+  messageId       String?   // RFC Message-ID
+  inReplyTo       String?   // References header
+  references      String[]  @default([])
+
+  // CRM Linking - Auto-linked to contacts/companies
+  linkedContactId String?
+  linkedCompanyId String?
+  linkedDealId    String?
+  linkedProjectId String?
+  linkConfidence  Float?    // 0-1 confidence score of auto-link
+  manuallyLinked  Boolean   @default(false)
+
+  // Categorization
+  labels          String[]  @default([])
+  category        String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  emailAccount    EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  emailAccountId  String
+  folder          EmailFolder? @relation(fields: [folderId], references: [id])
+  folderId        String?
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  // Linked entities
+  linkedContact   Contact?  @relation("ContactEmails", fields: [linkedContactId], references: [id])
+  linkedCompany   Company?  @relation("CompanyEmails", fields: [linkedCompanyId], references: [id])
+  linkedDeal      Deal?     @relation("DealEmails", fields: [linkedDealId], references: [id])
+  linkedProject   Project?  @relation("ProjectEmails", fields: [linkedProjectId], references: [id])
+
+  // Attachments
+  attachments     EmailAttachment[]
+
+  @@unique([emailAccountId, externalId])
+  @@index([emailAccountId])
+  @@index([organizationId])
+  @@index([linkedContactId])
+  @@index([linkedCompanyId])
+  @@index([receivedAt])
+  @@index([fromAddress])
+}
+
+model EmailAttachment {
+  id              String    @id @default(cuid())
+  externalId      String?   // Attachment ID from provider
+  name            String
+  contentType     String
+  size            Int
+  isInline        Boolean   @default(false)
+  contentId       String?   // For inline images
+
+  // Storage
+  storedPath      String?   // Local/S3 path if downloaded
+  downloadUrl     String?   // URL to download from provider
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  email           Email     @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  emailId         String
+
+  @@index([emailId])
+}
+
+// ============================================
+// AI ASSISTANT INTEGRATION
+// Integrazione ChatGPT, Claude, etc.
+// ============================================
+
+model AIConfiguration {
+  id              String    @id @default(cuid())
+  name            String
+  provider        AIProvider
+  model           String    // e.g., "gpt-4", "claude-3-opus"
+
+  // API settings
+  apiKey          String?   // Encrypted
+  baseUrl         String?   // Custom endpoint
+
+  // Model settings
+  temperature     Float     @default(0.7)
+  maxTokens       Int       @default(2000)
+  topP            Float?
+  frequencyPenalty Float?
+  presencePenalty Float?
+
+  // System prompt
+  systemPrompt    String?   // Default system prompt
+
+  // Context settings
+  includeContext  Boolean   @default(true) // Include CRM context
+  contextModules  String[]  @default([])   // Which modules to include
+
+  // Usage limits
+  dailyTokenLimit Int?
+  monthlyTokenLimit Int?
+  tokensUsedToday Int       @default(0)
+  tokensUsedMonth Int       @default(0)
+  lastResetAt     DateTime  @default(now())
+
+  // Features
+  enabledFeatures String[]  @default([]) // chat, summarize, translate, etc.
+
+  isActive        Boolean   @default(true)
+  isDefault       Boolean   @default(false)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  integration     Integration? @relation(fields: [integrationId], references: [id])
+  integrationId   String?
+
+  // Conversations
+  conversations   AIConversation[]
+
+  @@index([organizationId])
+  @@index([provider])
+}
+
+enum AIProvider {
+  OPENAI
+  ANTHROPIC
+  AZURE_OPENAI
+  GOOGLE
+  MISTRAL
+  OLLAMA
+  CUSTOM
+}
+
+model AIConversation {
+  id              String    @id @default(cuid())
+  title           String?
+
+  // Context linking
+  contextType     String?   // contact, company, deal, project, etc.
+  contextId       String?
+  contextSummary  String?   // Summary of the linked entity
+
+  // Conversation metadata
+  totalTokens     Int       @default(0)
+  messageCount    Int       @default(0)
+
+  // Status
+  isArchived      Boolean   @default(false)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  user            User      @relation("UserAIConversations", fields: [userId], references: [id])
+  userId          String
+  configuration   AIConfiguration @relation(fields: [configurationId], references: [id])
+  configurationId String
+
+  // Messages
+  messages        AIMessage[]
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([contextType, contextId])
+}
+
+model AIMessage {
+  id              String    @id @default(cuid())
+  role            AIMessageRole
+  content         String
+
+  // Token usage
+  promptTokens    Int?
+  completionTokens Int?
+  totalTokens     Int?
+
+  // Model info
+  model           String?
+
+  // Function/Tool calls
+  functionCalls   Json?     // If AI used function calling
+
+  // Feedback
+  rating          Int?      // 1-5 rating
+  feedback        String?
+
+  // Error handling
+  isError         Boolean   @default(false)
+  errorMessage    String?
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  conversation    AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId  String
+
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  FUNCTION
+}
+
+// AI Prompts library
+model AIPromptTemplate {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  category        String    // sales, support, analysis, translation, etc.
+
+  // Prompt content
+  prompt          String
+  variables       String[]  @default([]) // Expected variables in prompt
+
+  // Settings
+  provider        AIProvider?
+  model           String?
+  temperature     Float?
+  maxTokens       Int?
+
+  // Usage tracking
+  usageCount      Int       @default(0)
+
+  isActive        Boolean   @default(true)
+  isPublic        Boolean   @default(false) // Shared across organizations
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+  organizationId  String?
+  createdBy       User?     @relation("AIPromptCreator", fields: [createdById], references: [id])
+  createdById     String?
+
+  @@index([organizationId])
+  @@index([category])
+}
+
+// ============================================
+// WEBHOOKS SYSTEM
+// Sistema webhook per Replit e servizi esterni
+// ============================================
+
+model Webhook {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+
+  // Endpoint
+  url             String
+  method          String    @default("POST")
+  headers         Json?     // Custom headers
+
+  // Authentication
+  authType        AuthType  @default(NONE)
+  authValue       String?   // Encrypted auth value
+
+  // Trigger configuration
+  triggerEvents   String[]  // contact.created, deal.updated, etc.
+  filters         Json?     // Filter conditions
+
+  // Payload
+  payloadTemplate Json?     // Custom payload template
+  includeEntity   Boolean   @default(true)
+
+  // Retry settings
+  retryEnabled    Boolean   @default(true)
+  maxRetries      Int       @default(3)
+  retryDelay      Int       @default(60) // seconds
+
+  // Status
+  isActive        Boolean   @default(true)
+  lastTriggeredAt DateTime?
+  successCount    Int       @default(0)
+  failureCount    Int       @default(0)
+
+  // Secret for signature verification
+  signingSecret   String?   // For incoming webhooks
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  integration     Integration? @relation(fields: [integrationId], references: [id])
+  integrationId   String?
+  createdBy       User      @relation("WebhookCreator", fields: [createdById], references: [id])
+  createdById     String
+
+  // Delivery logs
+  deliveries      WebhookDelivery[]
+
+  @@index([organizationId])
+  @@index([triggerEvents])
+}
+
+model WebhookDelivery {
+  id              String    @id @default(cuid())
+  event           String
+
+  // Request
+  requestUrl      String
+  requestMethod   String
+  requestHeaders  Json?
+  requestBody     Json?
+
+  // Response
+  responseStatus  Int?
+  responseHeaders Json?
+  responseBody    String?
+
+  // Timing
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  duration        Int?      // milliseconds
+
+  // Status
+  status          String    // pending, success, failed, retrying
+  retryCount      Int       @default(0)
+  nextRetryAt     DateTime?
+  errorMessage    String?
+
+  // Relations
+  webhook         Webhook   @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  webhookId       String
+
+  @@index([webhookId])
+  @@index([status])
+  @@index([startedAt])
+}
+
+// Incoming webhook endpoints
+model IncomingWebhook {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+
+  // Endpoint
+  endpoint        String    @unique // Generated unique endpoint path
+
+  // Security
+  secret          String?   // For signature verification
+  allowedIps      String[]  @default([])
+
+  // Processing
+  handlerType     String    // supplier_update, replit_callback, custom, etc.
+  handlerConfig   Json?     // Handler-specific configuration
+  transformScript String?   // Optional JavaScript transform
+
+  // Target action
+  targetEntity    String?   // contact, product, stock, etc.
+  targetAction    String?   // create, update, sync
+  fieldMapping    Json?     // Map incoming fields to entity fields
+
+  // Status
+  isActive        Boolean   @default(true)
+  lastReceivedAt  DateTime?
+  requestCount    Int       @default(0)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User      @relation("IncomingWebhookCreator", fields: [createdById], references: [id])
+  createdById     String
+
+  // Logs
+  logs            IncomingWebhookLog[]
+
+  @@index([organizationId])
+  @@index([endpoint])
+}
+
+model IncomingWebhookLog {
+  id              String    @id @default(cuid())
+
+  // Request info
+  method          String
+  headers         Json?
+  body            Json?
+  query           Json?
+  ip              String?
+
+  // Processing
+  status          String    // received, processed, failed
+  processingTime  Int?      // milliseconds
+  result          Json?
+  errorMessage    String?
+
+  receivedAt      DateTime  @default(now())
+
+  // Relations
+  webhook         IncomingWebhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  webhookId       String
+
+  @@index([webhookId])
+  @@index([receivedAt])
+}
+
+// ============================================
+// API KEYS FOR EXTERNAL ACCESS
+// Chiavi API per accesso esterno (Replit, etc.)
+// ============================================
+
+model ApiKey {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+
+  // Key
+  keyPrefix       String    // First 8 chars for identification
+  keyHash         String    // Hashed full key
+
+  // Permissions
+  permissions     String[]  @default([]) // Specific permissions
+  allowedEndpoints String[] @default([]) // Specific endpoints
+  rateLimit       Int       @default(1000) // Requests per hour
+
+  // Restrictions
+  allowedIps      String[]  @default([])
+  allowedOrigins  String[]  @default([])
+
+  // Usage
+  lastUsedAt      DateTime?
+  usageCount      Int       @default(0)
+
+  // Expiration
+  expiresAt       DateTime?
+
+  isActive        Boolean   @default(true)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User      @relation("ApiKeyCreator", fields: [createdById], references: [id])
+  createdById     String
+
+  @@index([organizationId])
+  @@index([keyPrefix])
 }

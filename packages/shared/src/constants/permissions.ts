@@ -17,6 +17,13 @@ export const MODULES = {
   REPORTS: 'reports',
   SETTINGS: 'settings',
   USERS: 'users',
+  // Integration modules
+  INTEGRATIONS: 'integrations',
+  EMAIL_SYNC: 'email_sync',
+  AI_ASSISTANT: 'ai_assistant',
+  WEBHOOKS: 'webhooks',
+  PRICE_LISTS: 'price_lists',
+  API_KEYS: 'api_keys',
 } as const;
 
 export const ACTIONS = {
@@ -79,6 +86,12 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'warehouse:view',
     'ddt:view', 'ddt:create', 'ddt:edit',
     'suppliers:view',
+    // Integration modules (CTO manages technical integrations)
+    'integrations:view', 'integrations:create', 'integrations:edit',
+    'webhooks:view', 'webhooks:create', 'webhooks:edit',
+    'api_keys:view', 'api_keys:create', 'api_keys:edit',
+    'ai_assistant:view', 'ai_assistant:create', 'ai_assistant:edit',
+    'email_sync:view',
     // Read-only for others
     'contacts:view', 'companies:view', 'deals:view',
     'quotes:view', 'invoices:view', 'purchase_orders:view',
@@ -93,6 +106,9 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'warehouse:view', 'warehouse:create', 'warehouse:edit',
     'products:view', 'products:create', 'products:edit',
     'ddt:view', 'ddt:create', 'ddt:edit',
+    // Price lists integration
+    'price_lists:view', 'price_lists:create', 'price_lists:edit', 'price_lists:delete',
+    'integrations:view',
     // Read-only for others
     'projects:view', 'contacts:view', 'companies:view',
     'quotes:view', 'invoices:view', 'reports:view',
@@ -106,6 +122,9 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'quotes:view', 'quotes:create', 'quotes:edit', 'quotes:approve', 'quotes:export',
     'campaigns:view', 'campaigns:create', 'campaigns:edit', 'campaigns:approve',
     'reports:view', 'reports:export',
+    // Email and AI integration for sales
+    'email_sync:view', 'email_sync:create', 'email_sync:edit',
+    'ai_assistant:view', 'ai_assistant:create',
     // Read-only for others
     'products:view', 'projects:view', 'invoices:view',
     'users:view',
@@ -120,6 +139,9 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'campaigns:view', 'campaigns:create', 'campaigns:edit',
     'products:view',
     'reports:view',
+    // Email and AI integration
+    'email_sync:view', 'email_sync:create',
+    'ai_assistant:view', 'ai_assistant:create',
   ],
 
   TECHNICAL_MANAGER: [
@@ -149,6 +171,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'suppliers:view',
     'purchase_orders:view',
     'projects:view',
+    // Price lists for inventory management
+    'price_lists:view', 'price_lists:create', 'price_lists:edit',
   ],
 
   // Operational roles

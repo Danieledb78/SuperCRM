@@ -35,6 +35,13 @@ import reportRoutes from './routes/report.routes.js';
 import templateRoutes from './routes/template.routes.js';
 import documentRoutes from './routes/document.routes.js';
 
+// Integrations, Email, AI, Webhooks
+import integrationRoutes from './routes/integration.routes.js';
+import emailRoutes from './routes/email.routes.js';
+import aiRoutes from './routes/ai.routes.js';
+import webhookRoutes from './routes/webhook.routes.js';
+import pricelistRoutes from './routes/pricelist.routes.js';
+
 dotenv.config();
 
 const app = express();
@@ -82,6 +89,13 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/documents', documentRoutes);
+
+// Integrations, Email, AI, Webhooks, Price Lists
+app.use('/api/integrations', integrationRoutes);
+app.use('/api/email', emailRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/pricelists', pricelistRoutes);
 
 // Error handling
 app.use(notFoundHandler);
