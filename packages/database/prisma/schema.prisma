@@ -1,0 +1,1910 @@
+// SuperCRM Database Schema
+// Mix between VTE CRM and GoHighLevel
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// AUTHENTICATION & USERS
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  firstName     String
+  lastName      String
+  phone         String?
+  avatar        String?
+  role          UserRole  @default(USER)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  organizationId String?
+
+  // Ownership relations
+  contacts       Contact[]
+  companies      Company[]
+  deals          Deal[]
+  activities     Activity[]
+  tasks          Task[]
+  notes          Note[]
+  quotes         Quote[]
+  invoices       Invoice[]
+  campaigns      Campaign[]
+  automations    Automation[]
+
+  // Project relations
+  managedProjects   Project[]       @relation("ProjectManager")
+  projectTeams      ProjectTeamMember[]
+  projectPhaseTasks ProjectPhaseTask[]
+  projectDocuments  ProjectDocument[]
+
+  // Reports & Templates
+  reports           Report[]
+  documentTemplates DocumentTemplate[] @relation("TemplateCreator")
+  generatedDocuments GeneratedDocument[]
+  customDashboards  CustomDashboard[]
+
+  @@index([organizationId])
+  @@index([email])
+}
+
+enum UserRole {
+  // System roles
+  SUPER_ADMIN       // Super amministratore sistema
+  ADMIN             // Amministratore organizzazione
+
+  // Executive roles
+  CEO               // Amministratore Delegato
+  COO               // Direttore Operativo
+  CFO               // Direttore Finanziario
+  CTO               // Direttore Tecnico
+
+  // Department heads
+  PURCHASING_DIRECTOR   // Direttore Ufficio Acquisti
+  SALES_DIRECTOR        // Direttore Commerciale
+
+  // Management roles
+  SALES_MANAGER         // Responsabile Commerciale
+  TECHNICAL_MANAGER     // Responsabile Tecnico
+  PROJECT_MANAGER       // Responsabile Commesse
+  WAREHOUSE_MANAGER     // Responsabile Magazzino
+
+  // Operational roles
+  SALES_AGENT           // Agente Commerciale
+  TECHNICIAN            // Tecnico
+  INSTALLER             // Installatore
+  ACCOUNTANT            // Contabile
+  SECRETARY             // Segreteria
+
+  // External roles (limited access)
+  SUPPLIER              // Fornitore (accesso portale fornitori)
+  SUBCONTRACTOR         // Sub appaltatore (accesso limitato)
+  CUSTOMER              // Cliente (accesso portale clienti)
+
+  // Default
+  USER                  // Utente generico
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logo        String?
+  website     String?
+  phone       String?
+  email       String?
+  address     String?
+  city        String?
+  province    String?
+  postalCode  String?
+  country     String?
+  vatNumber   String?  // Partita IVA
+  fiscalCode  String?  // Codice Fiscale
+  currency    String   @default("EUR")
+  timezone    String   @default("Europe/Rome")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users       User[]
+  contacts    Contact[]
+  companies   Company[]
+  deals       Deal[]
+  products    Product[]
+  quotes      Quote[]
+  invoices    Invoice[]
+  pipelines   Pipeline[]
+  campaigns   Campaign[]
+  automations Automation[]
+  tags        Tag[]
+  customFields CustomField[]
+
+  // Suppliers & Warehouse
+  suppliers     Supplier[]
+  purchaseOrders PurchaseOrder[]
+  warehouses    Warehouse[]
+  ddts          DDT[]
+  projects      Project[]
+
+  // Reports & Templates
+  reports           Report[]
+  documentTemplates DocumentTemplate[]
+  generatedDocuments GeneratedDocument[]
+  customDashboards  CustomDashboard[]
+
+  @@index([slug])
+}
+
+// ============================================
+// CRM CORE - CONTACTS & COMPANIES (VTE Style)
+// ============================================
+
+model Contact {
+  id              String    @id @default(cuid())
+  firstName       String
+  lastName        String
+  email           String?
+  phone           String?
+  mobile          String?
+  jobTitle        String?
+  department      String?
+  source          LeadSource?
+  status          ContactStatus @default(LEAD)
+  rating          Int?      @default(0) // 1-5 stars
+  description     String?
+  avatar          String?
+
+  // Address
+  address         String?
+  city            String?
+  province        String?
+  postalCode      String?
+  country         String?
+
+  // Social
+  linkedinUrl     String?
+  twitterUrl      String?
+  facebookUrl     String?
+
+  // Marketing consent (GDPR)
+  emailOptIn      Boolean   @default(false)
+  smsOptIn        Boolean   @default(false)
+
+  // Dates
+  birthday        DateTime?
+  lastContactedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?     @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+  company         Company?  @relation(fields: [companyId], references: [id])
+  companyId       String?
+
+  deals           Deal[]
+  activities      Activity[]
+  tasks           Task[]
+  notes           Note[]
+  quotes          Quote[]
+  invoices        Invoice[]
+  tags            ContactTag[]
+  customFieldValues CustomFieldValue[]
+  campaignContacts CampaignContact[]
+  automationLogs  AutomationLog[]
+  appointments    Appointment[]
+
+  // Projects & DDT
+  projects        Project[]
+  ddts            DDT[]
+
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([companyId])
+  @@index([email])
+  @@index([status])
+}
+
+enum ContactStatus {
+  LEAD
+  PROSPECT
+  CUSTOMER
+  CHURNED
+  INACTIVE
+}
+
+enum LeadSource {
+  WEBSITE
+  REFERRAL
+  SOCIAL_MEDIA
+  ADVERTISING
+  EMAIL_CAMPAIGN
+  COLD_CALL
+  TRADE_SHOW
+  PARTNER
+  OTHER
+}
+
+model Company {
+  id              String    @id @default(cuid())
+  name            String
+  email           String?
+  phone           String?
+  website         String?
+  industry        String?
+  employeeCount   Int?
+  annualRevenue   Decimal?  @db.Decimal(15, 2)
+  description     String?
+  logo            String?
+
+  // Address
+  address         String?
+  city            String?
+  province        String?
+  postalCode      String?
+  country         String?
+
+  // Italian fiscal data
+  vatNumber       String?   // Partita IVA
+  fiscalCode      String?   // Codice Fiscale
+  sdiCode         String?   // Codice SDI per fatturazione elettronica
+  pecEmail        String?   // PEC
+
+  // Billing address (if different)
+  billingAddress  String?
+  billingCity     String?
+  billingProvince String?
+  billingPostalCode String?
+  billingCountry  String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?     @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+
+  contacts        Contact[]
+  deals           Deal[]
+  quotes          Quote[]
+  invoices        Invoice[]
+  tags            CompanyTag[]
+  customFieldValues CustomFieldValue[]
+
+  // Projects & DDT
+  projects        Project[]
+  ddts            DDT[]
+
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([name])
+}
+
+// ============================================
+// SALES PIPELINE & DEALS (GoHighLevel Style)
+// ============================================
+
+model Pipeline {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  isDefault       Boolean   @default(false)
+  order           Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  stages          PipelineStage[]
+  deals           Deal[]
+
+  @@index([organizationId])
+}
+
+model PipelineStage {
+  id              String    @id @default(cuid())
+  name            String
+  color           String    @default("#3B82F6")
+  order           Int       @default(0)
+  probability     Int       @default(0) // Win probability percentage
+  rottenDays      Int?      // Days before deal is considered "rotten"
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  pipeline        Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  pipelineId      String
+  deals           Deal[]
+
+  @@index([pipelineId])
+}
+
+model Deal {
+  id              String    @id @default(cuid())
+  title           String
+  value           Decimal?  @db.Decimal(15, 2)
+  currency        String    @default("EUR")
+  status          DealStatus @default(OPEN)
+  priority        Priority  @default(MEDIUM)
+  expectedCloseDate DateTime?
+  actualCloseDate DateTime?
+  lostReason      String?
+  description     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  pipeline        Pipeline  @relation(fields: [pipelineId], references: [id])
+  pipelineId      String
+  stage           PipelineStage @relation(fields: [stageId], references: [id])
+  stageId         String
+  owner           User?     @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+  contact         Contact?  @relation(fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?  @relation(fields: [companyId], references: [id])
+  companyId       String?
+
+  activities      Activity[]
+  tasks           Task[]
+  notes           Note[]
+  quotes          Quote[]
+  tags            DealTag[]
+  customFieldValues CustomFieldValue[]
+
+  // Project
+  project         Project?
+
+  @@index([organizationId])
+  @@index([pipelineId])
+  @@index([stageId])
+  @@index([ownerId])
+  @@index([status])
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// ============================================
+// ACTIVITIES, TASKS & NOTES
+// ============================================
+
+model Activity {
+  id              String       @id @default(cuid())
+  type            ActivityType
+  subject         String
+  description     String?
+  duration        Int?         // Duration in minutes
+  outcome         String?
+  scheduledAt     DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Relations
+  owner           User         @relation(fields: [ownerId], references: [id])
+  ownerId         String
+  contact         Contact?     @relation(fields: [contactId], references: [id])
+  contactId       String?
+  deal            Deal?        @relation(fields: [dealId], references: [id])
+  dealId          String?
+
+  @@index([ownerId])
+  @@index([contactId])
+  @@index([dealId])
+  @@index([type])
+}
+
+enum ActivityType {
+  CALL
+  EMAIL
+  MEETING
+  TASK
+  NOTE
+  SMS
+  WHATSAPP
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  title           String
+  description     String?
+  priority        Priority   @default(MEDIUM)
+  status          TaskStatus @default(TODO)
+  dueDate         DateTime?
+  completedAt     DateTime?
+  reminderAt      DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  // Relations
+  owner           User       @relation(fields: [ownerId], references: [id])
+  ownerId         String
+  contact         Contact?   @relation(fields: [contactId], references: [id])
+  contactId       String?
+  deal            Deal?      @relation(fields: [dealId], references: [id])
+  dealId          String?
+
+  @@index([ownerId])
+  @@index([contactId])
+  @@index([dealId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Note {
+  id              String    @id @default(cuid())
+  content         String
+  isPinned        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  author          User      @relation(fields: [authorId], references: [id])
+  authorId        String
+  contact         Contact?  @relation(fields: [contactId], references: [id])
+  contactId       String?
+  deal            Deal?     @relation(fields: [dealId], references: [id])
+  dealId          String?
+
+  @@index([authorId])
+  @@index([contactId])
+  @@index([dealId])
+}
+
+// ============================================
+// QUOTES & INVOICES (VTE Gestionale)
+// ============================================
+
+model Product {
+  id              String    @id @default(cuid())
+  name            String
+  sku             String?
+  description     String?
+  unitPrice       Decimal   @db.Decimal(15, 2)
+  currency        String    @default("EUR")
+  vatRate         Decimal   @default(22) @db.Decimal(5, 2) // IVA
+  category        String?
+  unit            String    @default("pz") // pz, kg, lt, ore, etc.
+  isActive        Boolean   @default(true)
+  stockQuantity   Int?
+  minStockLevel   Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  quoteItems      QuoteItem[]
+  invoiceItems    InvoiceItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+
+  // Warehouse & Suppliers
+  stockItems      StockItem[]
+  stockMovements  StockMovement[]
+  supplierProducts SupplierProduct[]
+  ddtItems        DDTItem[]
+  projectMaterials ProjectMaterial[]
+
+  @@index([organizationId])
+  @@index([sku])
+}
+
+model Quote {
+  id              String      @id @default(cuid())
+  number          String      // Preventivo numero
+  status          QuoteStatus @default(DRAFT)
+  issueDate       DateTime    @default(now())
+  expiryDate      DateTime?
+  subject         String?
+  notes           String?
+  terms           String?
+
+  // Totals
+  subtotal        Decimal     @db.Decimal(15, 2)
+  discountPercent Decimal?    @db.Decimal(5, 2)
+  discountAmount  Decimal?    @db.Decimal(15, 2)
+  taxAmount       Decimal     @db.Decimal(15, 2)
+  total           Decimal     @db.Decimal(15, 2)
+  currency        String      @default("EUR")
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?       @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+  contact         Contact?    @relation(fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?    @relation(fields: [companyId], references: [id])
+  companyId       String?
+  deal            Deal?       @relation(fields: [dealId], references: [id])
+  dealId          String?
+  project         Project?    @relation("ProjectQuotes", fields: [projectId], references: [id])
+  projectId       String?
+
+  items           QuoteItem[]
+  invoice         Invoice?    // If converted to invoice
+
+  @@unique([organizationId, number])
+  @@index([organizationId])
+  @@index([status])
+  @@index([projectId])
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CONVERTED
+}
+
+model QuoteItem {
+  id              String    @id @default(cuid())
+  description     String
+  quantity        Decimal   @db.Decimal(10, 2)
+  unitPrice       Decimal   @db.Decimal(15, 2)
+  discountPercent Decimal?  @db.Decimal(5, 2)
+  vatRate         Decimal   @db.Decimal(5, 2)
+  total           Decimal   @db.Decimal(15, 2)
+  order           Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  quote           Quote     @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  quoteId         String
+  product         Product?  @relation(fields: [productId], references: [id])
+  productId       String?
+
+  @@index([quoteId])
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  number          String        // Fattura numero
+  type            InvoiceType   @default(INVOICE)
+  status          InvoiceStatus @default(DRAFT)
+  issueDate       DateTime      @default(now())
+  dueDate         DateTime?
+  paidDate        DateTime?
+  subject         String?
+  notes           String?
+  paymentTerms    String?
+  paymentMethod   String?
+
+  // Italian e-invoicing
+  sdiStatus       String?       // Stato SDI
+  sdiId           String?       // ID fattura elettronica
+
+  // Totals
+  subtotal        Decimal       @db.Decimal(15, 2)
+  discountPercent Decimal?      @db.Decimal(5, 2)
+  discountAmount  Decimal?      @db.Decimal(15, 2)
+  taxAmount       Decimal       @db.Decimal(15, 2)
+  total           Decimal       @db.Decimal(15, 2)
+  paidAmount      Decimal       @default(0) @db.Decimal(15, 2)
+  currency        String        @default("EUR")
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?         @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+  contact         Contact?      @relation(fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?      @relation(fields: [companyId], references: [id])
+  companyId       String?
+  quote           Quote?        @relation(fields: [quoteId], references: [id])
+  quoteId         String?       @unique
+  project         Project?      @relation("ProjectInvoices", fields: [projectId], references: [id])
+  projectId       String?
+
+  items           InvoiceItem[]
+  payments        Payment[]
+  projectCosts    ProjectCost[] @relation("CostInvoice")
+
+  @@unique([organizationId, number])
+  @@index([organizationId])
+  @@index([status])
+  @@index([projectId])
+}
+
+enum InvoiceType {
+  INVOICE         // Fattura
+  CREDIT_NOTE     // Nota di credito
+  PROFORMA        // Proforma
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  VIEWED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model InvoiceItem {
+  id              String    @id @default(cuid())
+  description     String
+  quantity        Decimal   @db.Decimal(10, 2)
+  unitPrice       Decimal   @db.Decimal(15, 2)
+  discountPercent Decimal?  @db.Decimal(5, 2)
+  vatRate         Decimal   @db.Decimal(5, 2)
+  total           Decimal   @db.Decimal(15, 2)
+  order           Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  invoice         Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId       String
+  product         Product?  @relation(fields: [productId], references: [id])
+  productId       String?
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  amount          Decimal       @db.Decimal(15, 2)
+  currency        String        @default("EUR")
+  method          PaymentMethod
+  reference       String?
+  notes           String?
+  paidAt          DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  invoice         Invoice       @relation(fields: [invoiceId], references: [id])
+  invoiceId       String
+
+  @@index([invoiceId])
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CREDIT_CARD
+  PAYPAL
+  CHECK
+  OTHER
+}
+
+// ============================================
+// MARKETING AUTOMATION (GoHighLevel Style)
+// ============================================
+
+model Campaign {
+  id              String         @id @default(cuid())
+  name            String
+  type            CampaignType
+  status          CampaignStatus @default(DRAFT)
+  subject         String?        // Email subject
+  content         String?        // Email/SMS content
+  htmlContent     String?        // HTML email content
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+
+  // Stats
+  totalRecipients Int            @default(0)
+  delivered       Int            @default(0)
+  opened          Int            @default(0)
+  clicked         Int            @default(0)
+  bounced         Int            @default(0)
+  unsubscribed    Int            @default(0)
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // Relations
+  organization    Organization   @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?          @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+
+  contacts        CampaignContact[]
+
+  @@index([organizationId])
+  @@index([status])
+}
+
+enum CampaignType {
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  PAUSED
+  CANCELLED
+}
+
+model CampaignContact {
+  id              String    @id @default(cuid())
+  status          String    @default("pending") // pending, sent, delivered, opened, clicked, bounced
+  sentAt          DateTime?
+  openedAt        DateTime?
+  clickedAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  campaign        Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignId      String
+  contact         Contact   @relation(fields: [contactId], references: [id])
+  contactId       String
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+// ============================================
+// WORKFLOW AUTOMATION (GoHighLevel Style)
+// ============================================
+
+model Automation {
+  id              String           @id @default(cuid())
+  name            String
+  description     String?
+  trigger         AutomationTrigger
+  triggerConfig   Json?            // Trigger configuration
+  isActive        Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relations
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User?            @relation(fields: [ownerId], references: [id])
+  ownerId         String?
+
+  actions         AutomationAction[]
+  logs            AutomationLog[]
+
+  @@index([organizationId])
+  @@index([isActive])
+}
+
+enum AutomationTrigger {
+  CONTACT_CREATED
+  CONTACT_UPDATED
+  CONTACT_TAG_ADDED
+  DEAL_CREATED
+  DEAL_STAGE_CHANGED
+  DEAL_WON
+  DEAL_LOST
+  FORM_SUBMITTED
+  APPOINTMENT_BOOKED
+  INVOICE_CREATED
+  INVOICE_PAID
+  MANUAL
+}
+
+model AutomationAction {
+  id              String        @id @default(cuid())
+  type            ActionType
+  config          Json          // Action configuration
+  delayMinutes    Int           @default(0)
+  order           Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  automation      Automation    @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  automationId    String
+
+  @@index([automationId])
+}
+
+enum ActionType {
+  SEND_EMAIL
+  SEND_SMS
+  CREATE_TASK
+  UPDATE_CONTACT
+  ADD_TAG
+  REMOVE_TAG
+  MOVE_DEAL_STAGE
+  CREATE_DEAL
+  NOTIFY_USER
+  WEBHOOK
+  WAIT
+}
+
+model AutomationLog {
+  id              String    @id @default(cuid())
+  status          String    // success, failed, pending
+  message         String?
+  executedAt      DateTime  @default(now())
+
+  // Relations
+  automation      Automation @relation(fields: [automationId], references: [id])
+  automationId    String
+  contact         Contact?   @relation(fields: [contactId], references: [id])
+  contactId       String?
+
+  @@index([automationId])
+  @@index([contactId])
+}
+
+// ============================================
+// APPOINTMENTS & CALENDAR (GoHighLevel Style)
+// ============================================
+
+model Appointment {
+  id              String            @id @default(cuid())
+  title           String
+  description     String?
+  startTime       DateTime
+  endTime         DateTime
+  location        String?
+  meetingUrl      String?           // Video call link
+  status          AppointmentStatus @default(SCHEDULED)
+  reminderSent    Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  contact         Contact           @relation(fields: [contactId], references: [id])
+  contactId       String
+
+  @@index([contactId])
+  @@index([startTime])
+  @@index([status])
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+// ============================================
+// TAGS & CUSTOM FIELDS
+// ============================================
+
+model Tag {
+  id              String    @id @default(cuid())
+  name            String
+  color           String    @default("#3B82F6")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  contacts        ContactTag[]
+  companies       CompanyTag[]
+  deals           DealTag[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model ContactTag {
+  contact         Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactId       String
+  tag             Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  tagId           String
+  createdAt       DateTime  @default(now())
+
+  @@id([contactId, tagId])
+}
+
+model CompanyTag {
+  company         Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyId       String
+  tag             Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  tagId           String
+  createdAt       DateTime  @default(now())
+
+  @@id([companyId, tagId])
+}
+
+model DealTag {
+  deal            Deal      @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId          String
+  tag             Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  tagId           String
+  createdAt       DateTime  @default(now())
+
+  @@id([dealId, tagId])
+}
+
+model CustomField {
+  id              String          @id @default(cuid())
+  name            String
+  label           String
+  type            CustomFieldType
+  entity          EntityType
+  options         Json?           // For select/multiselect fields
+  isRequired      Boolean         @default(false)
+  order           Int             @default(0)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  values          CustomFieldValue[]
+
+  @@unique([organizationId, entity, name])
+  @@index([organizationId])
+}
+
+enum CustomFieldType {
+  TEXT
+  TEXTAREA
+  NUMBER
+  DECIMAL
+  DATE
+  DATETIME
+  BOOLEAN
+  SELECT
+  MULTISELECT
+  URL
+  EMAIL
+  PHONE
+}
+
+enum EntityType {
+  CONTACT
+  COMPANY
+  DEAL
+}
+
+model CustomFieldValue {
+  id              String      @id @default(cuid())
+  value           String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  field           CustomField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  fieldId         String
+  contact         Contact?    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactId       String?
+  company         Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyId       String?
+  deal            Deal?       @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId          String?
+
+  @@index([fieldId])
+  @@index([contactId])
+  @@index([companyId])
+  @@index([dealId])
+}
+
+// ============================================
+// SUPPLIERS & PURCHASE ORDERS
+// ============================================
+
+model Supplier {
+  id              String    @id @default(cuid())
+  name            String
+  code            String?   // Codice fornitore
+  email           String?
+  phone           String?
+  website         String?
+  category        SupplierCategory?
+  description     String?
+  logo            String?
+
+  // Address
+  address         String?
+  city            String?
+  province        String?
+  postalCode      String?
+  country         String?
+
+  // Italian fiscal data
+  vatNumber       String?   // Partita IVA
+  fiscalCode      String?   // Codice Fiscale
+  sdiCode         String?   // Codice SDI
+  pecEmail        String?   // PEC
+
+  // Payment terms
+  paymentTerms    String?   // es: "30 giorni data fattura"
+  bankName        String?
+  bankIban        String?
+
+  // Rating & notes
+  rating          Int?      @default(0) // 1-5 stars
+  notes           String?
+  isActive        Boolean   @default(true)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  purchaseOrders  PurchaseOrder[]
+  products        SupplierProduct[]
+  ddtInbound      DDT[]     @relation("SupplierDDT")
+  projectCosts    ProjectCost[]
+
+  @@index([organizationId])
+  @@index([category])
+  @@index([name])
+}
+
+enum SupplierCategory {
+  ELECTRICAL       // Materiale elettrico
+  PHOTOVOLTAIC     // Fotovoltaico
+  BATTERIES        // Batterie e accumulo
+  INVERTERS        // Inverter
+  CABLES           // Cavi e conduttori
+  SWITCHES         // Interruttori e quadri
+  LIGHTING         // Illuminazione
+  AUTOMATION       // Domotica e automazione
+  SAFETY           // Sicurezza
+  TOOLS            // Utensili e attrezzature
+  OTHER
+}
+
+model SupplierProduct {
+  id              String    @id @default(cuid())
+  supplierSku     String?   // SKU del fornitore
+  supplierPrice   Decimal   @db.Decimal(15, 2)
+  currency        String    @default("EUR")
+  leadTimeDays    Int?      // Tempo di consegna in giorni
+  minOrderQty     Decimal?  @db.Decimal(10, 2)
+  isPreferred     Boolean   @default(false)
+  lastPriceUpdate DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  supplier        Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierId      String
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId       String
+
+  @@unique([supplierId, productId])
+  @@index([supplierId])
+  @@index([productId])
+}
+
+model PurchaseOrder {
+  id              String              @id @default(cuid())
+  number          String              // Numero ordine
+  status          PurchaseOrderStatus @default(DRAFT)
+  orderDate       DateTime            @default(now())
+  expectedDate    DateTime?           // Data consegna prevista
+  receivedDate    DateTime?           // Data effettiva ricezione
+  notes           String?
+
+  // Totals
+  subtotal        Decimal             @db.Decimal(15, 2)
+  discountPercent Decimal?            @db.Decimal(5, 2)
+  discountAmount  Decimal?            @db.Decimal(15, 2)
+  taxAmount       Decimal             @db.Decimal(15, 2)
+  total           Decimal             @db.Decimal(15, 2)
+  currency        String              @default("EUR")
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Relations
+  organization    Organization        @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  supplier        Supplier            @relation(fields: [supplierId], references: [id])
+  supplierId      String
+  project         Project?            @relation(fields: [projectId], references: [id])
+  projectId       String?             // Ordine per una specifica commessa
+
+  items           PurchaseOrderItem[]
+  ddtInbound      DDT[]
+
+  @@unique([organizationId, number])
+  @@index([organizationId])
+  @@index([supplierId])
+  @@index([projectId])
+  @@index([status])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  CONFIRMED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  description     String
+  quantity        Decimal       @db.Decimal(10, 2)
+  receivedQty     Decimal       @default(0) @db.Decimal(10, 2)
+  unitPrice       Decimal       @db.Decimal(15, 2)
+  discountPercent Decimal?      @db.Decimal(5, 2)
+  vatRate         Decimal       @db.Decimal(5, 2)
+  total           Decimal       @db.Decimal(15, 2)
+  order           Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrderId String
+  product         Product?      @relation(fields: [productId], references: [id])
+  productId       String?
+
+  @@index([purchaseOrderId])
+}
+
+// ============================================
+// WAREHOUSE & INVENTORY
+// ============================================
+
+model Warehouse {
+  id              String    @id @default(cuid())
+  name            String
+  code            String?
+  address         String?
+  city            String?
+  province        String?
+  postalCode      String?
+  isDefault       Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  stockItems      StockItem[]
+  stockMovements  StockMovement[]
+  ddtFrom         DDT[]     @relation("DDTFromWarehouse")
+  ddtTo           DDT[]     @relation("DDTToWarehouse")
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model StockItem {
+  id              String    @id @default(cuid())
+  quantity        Decimal   @db.Decimal(15, 2)
+  reservedQty     Decimal   @default(0) @db.Decimal(15, 2) // Riservato per commesse
+  minLevel        Decimal?  @db.Decimal(15, 2) // Livello minimo di scorta
+  maxLevel        Decimal?  @db.Decimal(15, 2) // Livello massimo
+  reorderPoint    Decimal?  @db.Decimal(15, 2) // Punto di riordino
+  location        String?   // Posizione in magazzino (scaffale, ripiano)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id])
+  warehouseId     String
+  product         Product   @relation(fields: [productId], references: [id])
+  productId       String
+
+  @@unique([warehouseId, productId])
+  @@index([warehouseId])
+  @@index([productId])
+}
+
+model StockMovement {
+  id              String            @id @default(cuid())
+  type            StockMovementType
+  quantity        Decimal           @db.Decimal(15, 2)
+  reference       String?           // Riferimento documento (DDT, ordine, etc)
+  notes           String?
+  movementDate    DateTime          @default(now())
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  warehouse       Warehouse         @relation(fields: [warehouseId], references: [id])
+  warehouseId     String
+  product         Product           @relation(fields: [productId], references: [id])
+  productId       String
+  project         Project?          @relation(fields: [projectId], references: [id])
+  projectId       String?
+  ddt             DDT?              @relation(fields: [ddtId], references: [id])
+  ddtId           String?
+
+  @@index([warehouseId])
+  @@index([productId])
+  @@index([projectId])
+  @@index([type])
+  @@index([movementDate])
+}
+
+enum StockMovementType {
+  IN_PURCHASE        // Carico da acquisto
+  IN_RETURN          // Reso da cliente
+  IN_TRANSFER        // Trasferimento da altro magazzino
+  IN_ADJUSTMENT      // Rettifica inventario positiva
+  OUT_SALE           // Scarico per vendita
+  OUT_PROJECT        // Scarico per commessa
+  OUT_RETURN         // Reso a fornitore
+  OUT_TRANSFER       // Trasferimento ad altro magazzino
+  OUT_ADJUSTMENT     // Rettifica inventario negativa
+  OUT_WASTE          // Sfrido/scarto
+}
+
+// ============================================
+// DDT - DOCUMENTI DI TRASPORTO
+// ============================================
+
+model DDT {
+  id              String      @id @default(cuid())
+  number          String      // Numero DDT
+  type            DDTType
+  status          DDTStatus   @default(DRAFT)
+  issueDate       DateTime    @default(now())
+  transportDate   DateTime?
+  deliveryDate    DateTime?
+
+  // Transport info
+  transportReason String?     // Causale trasporto
+  carrier         String?     // Vettore
+  vehiclePlate    String?     // Targa veicolo
+  packages        Int?        // Numero colli
+  weight          Decimal?    @db.Decimal(10, 2) // Peso kg
+  notes           String?
+
+  // Addresses
+  pickupAddress   String?
+  deliveryAddress String?
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  // For outbound DDT (to customer)
+  contact         Contact?    @relation(fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?    @relation(fields: [companyId], references: [id])
+  companyId       String?
+
+  // For inbound DDT (from supplier)
+  supplier        Supplier?   @relation("SupplierDDT", fields: [supplierId], references: [id])
+  supplierId      String?
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderId String?
+
+  // Project relation
+  project         Project?    @relation(fields: [projectId], references: [id])
+  projectId       String?
+
+  // Warehouse
+  fromWarehouse   Warehouse?  @relation("DDTFromWarehouse", fields: [fromWarehouseId], references: [id])
+  fromWarehouseId String?
+  toWarehouse     Warehouse?  @relation("DDTToWarehouse", fields: [toWarehouseId], references: [id])
+  toWarehouseId   String?
+
+  items           DDTItem[]
+  stockMovements  StockMovement[]
+
+  @@unique([organizationId, number, type])
+  @@index([organizationId])
+  @@index([type])
+  @@index([status])
+  @@index([projectId])
+}
+
+enum DDTType {
+  INBOUND           // DDT in entrata (da fornitore)
+  OUTBOUND          // DDT in uscita (verso cliente)
+  INTERNAL          // DDT interno (trasferimento magazzini)
+  TO_PROJECT        // DDT verso cantiere/commessa
+  FROM_PROJECT      // DDT da cantiere (reso materiale)
+}
+
+enum DDTStatus {
+  DRAFT
+  READY
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+model DDTItem {
+  id              String    @id @default(cuid())
+  description     String
+  quantity        Decimal   @db.Decimal(10, 2)
+  unit            String    @default("pz")
+  serialNumbers   String?   // Numeri di serie (per tracciabilità)
+  lotNumber       String?   // Numero lotto
+  order           Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  ddt             DDT       @relation(fields: [ddtId], references: [id], onDelete: Cascade)
+  ddtId           String
+  product         Product?  @relation(fields: [productId], references: [id])
+  productId       String?
+
+  @@index([ddtId])
+}
+
+// ============================================
+// PROJECTS / COMMESSE (Kanban System)
+// ============================================
+
+model Project {
+  id              String        @id @default(cuid())
+  code            String        // Codice commessa (es: COM-2024-001)
+  name            String
+  description     String?
+  type            ProjectType
+  status          ProjectStatus @default(DRAFT)
+  priority        Priority      @default(MEDIUM)
+
+  // Dates
+  startDate       DateTime?
+  expectedEndDate DateTime?
+  actualEndDate   DateTime?
+
+  // Location
+  siteAddress     String?
+  siteCity        String?
+  siteProvince    String?
+  sitePostalCode  String?
+  siteCoordinates String?       // GPS coordinates
+
+  // Budget & financials
+  estimatedValue  Decimal?      @db.Decimal(15, 2)
+  actualValue     Decimal?      @db.Decimal(15, 2)
+  currency        String        @default("EUR")
+  marginPercent   Decimal?      @db.Decimal(5, 2)
+
+  // Technical info (for photovoltaic)
+  plantPowerKw    Decimal?      @db.Decimal(10, 2) // Potenza impianto kW
+  panelCount      Int?          // Numero pannelli
+  inverterModel   String?
+  batteryCapacityKwh Decimal?   @db.Decimal(10, 2) // Capacità batteria kWh
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  contact         Contact?      @relation(fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?      @relation(fields: [companyId], references: [id])
+  companyId       String?
+  deal            Deal?         @relation(fields: [dealId], references: [id])
+  dealId          String?
+  projectManager  User?         @relation("ProjectManager", fields: [projectManagerId], references: [id])
+  projectManagerId String?
+
+  // Kanban phases
+  phases          ProjectPhase[]
+  // Materials & costs
+  materials       ProjectMaterial[]
+  costs           ProjectCost[]
+  // Documents
+  documents       ProjectDocument[]
+  // Team
+  team            ProjectTeamMember[]
+  // Work logs
+  workLogs        ProjectWorkLog[]
+  // Related entities
+  purchaseOrders  PurchaseOrder[]
+  ddts            DDT[]
+  quotes          Quote[]       @relation("ProjectQuotes")
+  invoices        Invoice[]     @relation("ProjectInvoices")
+  stockMovements  StockMovement[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@index([status])
+  @@index([type])
+  @@index([contactId])
+  @@index([companyId])
+}
+
+enum ProjectType {
+  PHOTOVOLTAIC      // Impianto fotovoltaico
+  ELECTRICAL        // Impianto elettrico
+  BATTERY_STORAGE   // Accumulo batterie
+  MAINTENANCE       // Manutenzione
+  RENOVATION        // Ristrutturazione
+  NEW_CONSTRUCTION  // Nuova costruzione
+  AUTOMATION        // Domotica/Automazione
+  OTHER
+}
+
+enum ProjectStatus {
+  DRAFT             // Bozza
+  QUOTED            // Preventivato
+  APPROVED          // Approvato
+  IN_PROGRESS       // In corso
+  ON_HOLD           // In attesa
+  COMPLETED         // Completato
+  CANCELLED         // Annullato
+  WARRANTY          // In garanzia
+}
+
+// Kanban Phases for each project view
+model ProjectPhase {
+  id              String          @id @default(cuid())
+  name            String
+  description     String?
+  type            PhaseType       // Technical, Administrative, Supplier, Installation
+  status          PhaseStatus     @default(TODO)
+  order           Int             @default(0)
+  dueDate         DateTime?
+  completedAt     DateTime?
+  color           String          @default("#3B82F6")
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+
+  tasks           ProjectPhaseTask[]
+
+  @@index([projectId])
+  @@index([type])
+  @@index([status])
+}
+
+enum PhaseType {
+  TECHNICAL       // Vista tecnica (materiali, progetti, permessi)
+  ADMINISTRATIVE  // Vista amministrativa (pagamenti, incassi, fatture)
+  SUPPLIER        // Vista fornitori (ordini, consegne)
+  INSTALLATION    // Vista installazione (programmazione, team, tempi)
+}
+
+enum PhaseStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  BLOCKED
+  COMPLETED
+}
+
+model ProjectPhaseTask {
+  id              String      @id @default(cuid())
+  title           String
+  description     String?
+  status          TaskStatus  @default(TODO)
+  priority        Priority    @default(MEDIUM)
+  dueDate         DateTime?
+  completedAt     DateTime?
+  estimatedHours  Decimal?    @db.Decimal(6, 2)
+  actualHours     Decimal?    @db.Decimal(6, 2)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  phase           ProjectPhase @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  phaseId         String
+  assignee        User?       @relation(fields: [assigneeId], references: [id])
+  assigneeId      String?
+
+  @@index([phaseId])
+  @@index([assigneeId])
+  @@index([status])
+}
+
+// Materials allocated to project
+model ProjectMaterial {
+  id              String    @id @default(cuid())
+  quantity        Decimal   @db.Decimal(15, 2)
+  usedQuantity    Decimal   @default(0) @db.Decimal(15, 2)
+  unitCost        Decimal   @db.Decimal(15, 2)
+  totalCost       Decimal   @db.Decimal(15, 2)
+  status          MaterialStatus @default(PLANNED)
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  product         Product   @relation(fields: [productId], references: [id])
+  productId       String
+
+  @@index([projectId])
+  @@index([productId])
+  @@index([status])
+}
+
+enum MaterialStatus {
+  PLANNED         // Pianificato
+  ORDERED         // Ordinato
+  RECEIVED        // Ricevuto
+  IN_USE          // In uso
+  INSTALLED       // Installato
+  RETURNED        // Reso
+}
+
+// Project costs tracking
+model ProjectCost {
+  id              String      @id @default(cuid())
+  category        CostCategory
+  description     String
+  amount          Decimal     @db.Decimal(15, 2)
+  currency        String      @default("EUR")
+  date            DateTime    @default(now())
+  reference       String?     // Riferimento fattura/documento
+  notes           String?
+  isBillable      Boolean     @default(true) // Addebitabile al cliente
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  supplier        Supplier?   @relation(fields: [supplierId], references: [id])
+  supplierId      String?
+  invoice         Invoice?    @relation("CostInvoice", fields: [invoiceId], references: [id])
+  invoiceId       String?
+
+  @@index([projectId])
+  @@index([category])
+}
+
+enum CostCategory {
+  MATERIALS       // Materiali
+  LABOR           // Manodopera
+  TRANSPORT       // Trasporto
+  EQUIPMENT       // Noleggio attrezzature
+  PERMITS         // Permessi e pratiche
+  SUBCONTRACTOR   // Subappalto
+  TRAVEL          // Trasferte
+  ACCOMMODATION   // Alloggio
+  OTHER           // Altro
+}
+
+// Project team members
+model ProjectTeamMember {
+  id              String        @id @default(cuid())
+  role            TeamRole
+  hourlyRate      Decimal?      @db.Decimal(10, 2)
+  estimatedHours  Decimal?      @db.Decimal(10, 2)
+  actualHours     Decimal?      @db.Decimal(10, 2)
+  startDate       DateTime?
+  endDate         DateTime?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  user            User          @relation(fields: [userId], references: [id])
+  userId          String
+
+  workLogs        ProjectWorkLog[]
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+}
+
+enum TeamRole {
+  PROJECT_MANAGER
+  TECHNICIAN
+  ELECTRICIAN
+  INSTALLER
+  HELPER
+  DESIGNER
+  ADMIN
+}
+
+// Work time tracking
+model ProjectWorkLog {
+  id              String    @id @default(cuid())
+  date            DateTime
+  hours           Decimal   @db.Decimal(6, 2)
+  description     String?
+  activityType    String?   // Tipo di attività svolta
+  overtime        Boolean   @default(false)
+  billable        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  teamMember      ProjectTeamMember @relation(fields: [teamMemberId], references: [id])
+  teamMemberId    String
+
+  @@index([projectId])
+  @@index([teamMemberId])
+  @@index([date])
+}
+
+// Project documents
+model ProjectDocument {
+  id              String        @id @default(cuid())
+  name            String
+  type            DocumentType
+  filePath        String
+  fileSize        Int?
+  mimeType        String?
+  description     String?
+  version         String?       @default("1.0")
+  isPublic        Boolean       @default(false) // Visibile al cliente
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  uploadedBy      User          @relation(fields: [uploadedById], references: [id])
+  uploadedById    String
+
+  @@index([projectId])
+  @@index([type])
+}
+
+enum DocumentType {
+  QUOTE           // Preventivo
+  CONTRACT        // Contratto
+  TECHNICAL_SPEC  // Specifica tecnica
+  DRAWING         // Disegno/schema
+  PERMIT          // Permesso/autorizzazione
+  PHOTO           // Foto cantiere
+  INVOICE         // Fattura
+  DDT             // Documento di trasporto
+  WARRANTY        // Garanzia
+  MANUAL          // Manuale
+  CERTIFICATE     // Certificato (es: conformità)
+  OTHER
+}
+
+// ============================================
+// REPORTS & DOCUMENT TEMPLATES
+// ============================================
+
+model Report {
+  id              String        @id @default(cuid())
+  name            String
+  description     String?
+  type            ReportType
+  entity          ReportEntity
+  config          Json          // Report configuration (filters, columns, grouping)
+  chartType       ChartType?    // Chart type if applicable
+  isPublic        Boolean       @default(false) // Visible to all users
+  isFavorite      Boolean       @default(false)
+  schedule        String?       // Cron expression for scheduled reports
+  lastRunAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User          @relation(fields: [createdById], references: [id])
+  createdById     String
+
+  widgets         DashboardWidget[]
+
+  @@index([organizationId])
+  @@index([type])
+  @@index([entity])
+}
+
+enum ReportType {
+  TABLE           // Tabular report
+  CHART           // Chart/Graph report
+  SUMMARY         // Summary/KPI report
+  COMPARISON      // Comparison report
+  TREND           // Trend analysis
+  CUSTOM          // Custom report
+}
+
+enum ReportEntity {
+  CONTACTS
+  COMPANIES
+  DEALS
+  QUOTES
+  INVOICES
+  PROJECTS
+  PRODUCTS
+  SUPPLIERS
+  WAREHOUSE
+  ACTIVITIES
+  CAMPAIGNS
+  SALES           // Cross-entity sales analysis
+  FINANCIAL       // Financial reports
+}
+
+enum ChartType {
+  BAR
+  LINE
+  PIE
+  DOUGHNUT
+  AREA
+  SCATTER
+  FUNNEL
+  GAUGE
+  TABLE
+}
+
+model DocumentTemplate {
+  id              String            @id @default(cuid())
+  name            String
+  type            TemplateType
+  description     String?
+  content         String            // HTML/Handlebars template
+  headerContent   String?           // Header HTML
+  footerContent   String?           // Footer HTML
+  styles          String?           // CSS styles
+  variables       Json?             // Available variables for this template
+  paperSize       String            @default("A4")
+  orientation     String            @default("portrait")
+  margins         Json?             // { top, right, bottom, left }
+  isDefault       Boolean           @default(false)
+  isActive        Boolean           @default(true)
+  version         String            @default("1.0")
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User              @relation("TemplateCreator", fields: [createdById], references: [id])
+  createdById     String
+
+  generatedDocuments GeneratedDocument[]
+
+  @@unique([organizationId, type, name])
+  @@index([organizationId])
+  @@index([type])
+}
+
+enum TemplateType {
+  QUOTE           // Preventivo
+  INVOICE         // Fattura
+  CREDIT_NOTE     // Nota di credito
+  PROFORMA        // Proforma
+  DDT             // Documento di trasporto
+  PURCHASE_ORDER  // Ordine di acquisto
+  PROJECT_REPORT  // Report commessa
+  CONTRACT        // Contratto
+  OFFER           // Offerta commerciale
+  REMINDER        // Sollecito pagamento
+  EMAIL           // Template email
+  LETTER          // Lettera generica
+}
+
+// Generated documents history
+model GeneratedDocument {
+  id              String    @id @default(cuid())
+  name            String
+  type            TemplateType
+  entityType      String    // quote, invoice, ddt, project, etc.
+  entityId        String    // ID of the related entity
+  filePath        String
+  fileSize        Int?
+  format          String    @default("pdf") // pdf, html
+  generatedAt     DateTime  @default(now())
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  generatedBy     User      @relation(fields: [generatedById], references: [id])
+  generatedById   String
+  template        DocumentTemplate? @relation(fields: [templateId], references: [id])
+  templateId      String?
+
+  @@index([organizationId])
+  @@index([entityType, entityId])
+}
+
+// Dashboard widgets for custom dashboards
+model DashboardWidget {
+  id              String      @id @default(cuid())
+  name            String
+  type            WidgetType
+  config          Json        // Widget configuration
+  position        Json        // { x, y, w, h } for grid layout
+  refreshInterval Int?        // Auto-refresh in seconds
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  dashboard       CustomDashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+  dashboardId     String
+  report          Report?     @relation(fields: [reportId], references: [id])
+  reportId        String?
+
+  @@index([dashboardId])
+}
+
+enum WidgetType {
+  KPI             // Single KPI value
+  CHART           // Chart from report
+  TABLE           // Data table
+  LIST            // Recent items list
+  CALENDAR        // Mini calendar
+  TASKS           // Task list
+  PIPELINE        // Pipeline overview
+  ACTIVITY_FEED   // Recent activities
+}
+
+model CustomDashboard {
+  id              String      @id @default(cuid())
+  name            String
+  description     String?
+  isDefault       Boolean     @default(false)
+  layout          Json?       // Layout configuration
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User        @relation(fields: [ownerId], references: [id])
+  ownerId         String
+
+  widgets         DashboardWidget[]
+
+  @@index([organizationId])
+  @@index([ownerId])
+}
