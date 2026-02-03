@@ -78,6 +78,9 @@ model User {
   portalDocuments       PortalDocument[]    @relation("PortalDocumentUploader")
   staffPortalMessages   PortalMessage[]     @relation("StaffPortalMessages")
 
+  // Marketing Automation
+  createdEmailTemplates EmailTemplate[]     @relation("EmailTemplateCreator")
+
   @@index([organizationId])
   @@index([email])
 }
@@ -188,6 +191,13 @@ model Organization {
   portalDocuments       PortalDocument[]
   portalMessages        PortalMessage[]
 
+  // Marketing Automation
+  messagingProviders    MessagingProvider[]
+  emailTemplates        EmailTemplate[]
+  emailSequences        EmailSequence[]
+  smsTemplates          SmsTemplate[]
+  leadScoringRules      LeadScoringRule[]
+
   @@index([slug])
 }
 
@@ -222,6 +232,9 @@ model Contact {
   twitterUrl      String?
   facebookUrl     String?
 
+  // Lead Scoring
+  leadScore       Int       @default(0)
+
   // Marketing consent (GDPR)
   emailOptIn      Boolean   @default(false)
   smsOptIn        Boolean   @default(false)
@@ -250,6 +263,9 @@ model Contact {
   customFieldValues CustomFieldValue[]
   campaignContacts CampaignContact[]
   automationLogs  AutomationLog[]
+  automationEnrollments AutomationEnrollment[]
+  sequenceEnrollments   SequenceEnrollment[]
+  leadScoreHistory      LeadScoreHistory[]
   appointments    Appointment[]
 
   // Projects & DDT
@@ -438,6 +454,9 @@ model Deal {
 
   // Calendar
   calendarEvents  CalendarEvent[] @relation("DealEvents")
+
+  // Automations
+  automationEnrollments AutomationEnrollment[]
 
   @@index([organizationId])
   @@index([pipelineId])
@@ -865,8 +884,10 @@ model Automation {
   name            String
   description     String?
   trigger         AutomationTrigger
-  triggerConfig   Json?            // Trigger configuration
+  triggerConfig   Json?            // Trigger configuration (e.g. which stage, which tag)
   isActive        Boolean          @default(false)
+  runOnce         Boolean          @default(false)  // Run only once per contact
+  enrollmentCount Int              @default(0)      // Number of contacts enrolled
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -877,32 +898,56 @@ model Automation {
   ownerId         String?
 
   actions         AutomationAction[]
+  conditions      AutomationCondition[]
   logs            AutomationLog[]
+  enrollments     AutomationEnrollment[]
 
   @@index([organizationId])
   @@index([isActive])
 }
 
 enum AutomationTrigger {
+  // Contact triggers
   CONTACT_CREATED
   CONTACT_UPDATED
   CONTACT_TAG_ADDED
+  CONTACT_TAG_REMOVED
+  CONTACT_SCORE_CHANGED
+  // Deal triggers
   DEAL_CREATED
   DEAL_STAGE_CHANGED
   DEAL_WON
   DEAL_LOST
+  DEAL_VALUE_CHANGED
+  // Project triggers
+  PROJECT_CREATED
+  PROJECT_STATUS_CHANGED
+  PROJECT_COMPLETED
+  // Communication triggers
+  EMAIL_OPENED
+  EMAIL_CLICKED
+  EMAIL_REPLIED
+  SMS_RECEIVED
+  WHATSAPP_RECEIVED
+  // Other triggers
   FORM_SUBMITTED
   APPOINTMENT_BOOKED
+  APPOINTMENT_COMPLETED
   INVOICE_CREATED
   INVOICE_PAID
-  MANUAL
+  INVOICE_OVERDUE
+  TASK_COMPLETED
+  DATE_BASED          // Birthday, anniversary, custom date
+  MANUAL              // Manually triggered
 }
 
 model AutomationAction {
   id              String        @id @default(cuid())
   type            ActionType
+  name            String?       // Custom name for the action
   config          Json          // Action configuration
   delayMinutes    Int           @default(0)
+  delayType       DelayType     @default(MINUTES)
   order           Int           @default(0)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -911,27 +956,134 @@ model AutomationAction {
   automation      Automation    @relation(fields: [automationId], references: [id], onDelete: Cascade)
   automationId    String
 
+  // For conditional branches
+  parentActionId  String?       // If this action is inside a condition branch
+  conditionBranch String?       // "yes" or "no" branch
+
   @@index([automationId])
+  @@index([parentActionId])
 }
 
 enum ActionType {
+  // Communication
   SEND_EMAIL
   SEND_SMS
+  SEND_WHATSAPP
+  // CRM Actions
   CREATE_TASK
   UPDATE_CONTACT
+  UPDATE_DEAL
   ADD_TAG
   REMOVE_TAG
+  ADD_TO_SEGMENT
+  REMOVE_FROM_SEGMENT
   MOVE_DEAL_STAGE
   CREATE_DEAL
+  ASSIGN_USER
+  // Lead Scoring
+  ADD_SCORE
+  REMOVE_SCORE
+  SET_SCORE
+  // Notifications
   NOTIFY_USER
-  WEBHOOK
+  NOTIFY_TEAM
+  // Control Flow
   WAIT
+  CONDITION        // If/then branch
+  SPLIT_TEST       // A/B testing
+  GO_TO            // Jump to another action
+  END_AUTOMATION
+  // Integrations
+  WEBHOOK
+  HTTP_REQUEST
+}
+
+enum DelayType {
+  MINUTES
+  HOURS
+  DAYS
+  WEEKS
+  SPECIFIC_TIME    // Wait until specific time of day
+  BUSINESS_HOURS   // Only during business hours
+}
+
+model AutomationCondition {
+  id              String        @id @default(cuid())
+  field           String        // Field to check (e.g. "contact.email", "deal.value")
+  operator        ConditionOperator
+  value           String        // Value to compare
+  logicOperator   LogicOperator @default(AND)
+  order           Int           @default(0)
+
+  automation      Automation    @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  automationId    String
+
+  @@index([automationId])
+}
+
+enum ConditionOperator {
+  EQUALS
+  NOT_EQUALS
+  CONTAINS
+  NOT_CONTAINS
+  STARTS_WITH
+  ENDS_WITH
+  GREATER_THAN
+  LESS_THAN
+  GREATER_OR_EQUAL
+  LESS_OR_EQUAL
+  IS_EMPTY
+  IS_NOT_EMPTY
+  IS_TRUE
+  IS_FALSE
+}
+
+enum LogicOperator {
+  AND
+  OR
+}
+
+model AutomationEnrollment {
+  id              String    @id @default(cuid())
+  status          EnrollmentStatus @default(ACTIVE)
+  currentActionId String?   // Current action being executed
+  nextRunAt       DateTime? // When to run next action
+  completedAt     DateTime?
+  exitedAt        DateTime?
+  exitReason      String?
+  metadata        Json?     // Store context data
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  automation      Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  automationId    String
+  contact         Contact    @relation(fields: [contactId], references: [id])
+  contactId       String
+  deal            Deal?      @relation(fields: [dealId], references: [id])
+  dealId          String?
+
+  @@unique([automationId, contactId])
+  @@index([automationId])
+  @@index([contactId])
+  @@index([status])
+  @@index([nextRunAt])
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  EXITED
+  FAILED
 }
 
 model AutomationLog {
   id              String    @id @default(cuid())
-  status          String    // success, failed, pending
+  status          String    // success, failed, pending, skipped
+  actionType      ActionType?
+  actionName      String?
   message         String?
+  errorDetails    Json?
   executedAt      DateTime  @default(now())
 
   // Relations
@@ -939,9 +1091,222 @@ model AutomationLog {
   automationId    String
   contact         Contact?   @relation(fields: [contactId], references: [id])
   contactId       String?
+  enrollmentId    String?
 
   @@index([automationId])
   @@index([contactId])
+  @@index([executedAt])
+}
+
+// ============================================
+// LEAD SCORING
+// ============================================
+
+model LeadScoringRule {
+  id              String        @id @default(cuid())
+  name            String
+  description     String?
+  trigger         ScoreTrigger
+  triggerConfig   Json?         // Configuration for the trigger
+  scoreChange     Int           // Points to add (positive) or remove (negative)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  @@index([organizationId])
+  @@index([isActive])
+}
+
+enum ScoreTrigger {
+  EMAIL_OPENED
+  EMAIL_CLICKED
+  EMAIL_REPLIED
+  WEBSITE_VISIT
+  PAGE_VIEWED
+  FORM_SUBMITTED
+  DOCUMENT_DOWNLOADED
+  VIDEO_WATCHED
+  MEETING_SCHEDULED
+  MEETING_ATTENDED
+  PROPOSAL_VIEWED
+  PROPOSAL_ACCEPTED
+  DEAL_CREATED
+  INACTIVITY_DAYS
+  CUSTOM
+}
+
+model LeadScoreHistory {
+  id              String    @id @default(cuid())
+  previousScore   Int
+  newScore        Int
+  change          Int
+  reason          String
+  ruleId          String?
+  createdAt       DateTime  @default(now())
+
+  contact         Contact   @relation(fields: [contactId], references: [id])
+  contactId       String
+
+  @@index([contactId])
+  @@index([createdAt])
+}
+
+// ============================================
+// MESSAGING PROVIDERS CONFIGURATION
+// ============================================
+
+model MessagingProvider {
+  id              String          @id @default(cuid())
+  type            ProviderType
+  name            String          // Display name
+  isActive        Boolean         @default(false)
+  isDefault       Boolean         @default(false)
+  config          Json            // Encrypted credentials and settings
+  dailyLimit      Int?            // Daily sending limit
+  monthlyLimit    Int?            // Monthly sending limit
+  sentToday       Int             @default(0)
+  sentThisMonth   Int             @default(0)
+  lastResetDaily  DateTime        @default(now())
+  lastResetMonth  DateTime        @default(now())
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  @@unique([organizationId, type, name])
+  @@index([organizationId])
+}
+
+enum ProviderType {
+  EMAIL_SMTP
+  EMAIL_SENDGRID
+  EMAIL_MAILGUN
+  EMAIL_SES
+  SMS_TWILIO
+  SMS_VONAGE
+  SMS_MESSAGEBIRD
+  WHATSAPP_TWILIO
+  WHATSAPP_360DIALOG
+  WHATSAPP_META
+}
+
+// ============================================
+// EMAIL TEMPLATES & SEQUENCES
+// ============================================
+
+model EmailTemplate {
+  id              String        @id @default(cuid())
+  name            String
+  subject         String
+  bodyHtml        String        @db.Text
+  bodyText        String?       @db.Text
+  category        String?       // marketing, transactional, notification
+  variables       Json?         // Available merge variables
+  previewText     String?
+  isActive        Boolean       @default(true)
+  usageCount      Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  createdBy       User?         @relation("EmailTemplateCreator", fields: [createdById], references: [id])
+  createdById     String?
+
+  @@index([organizationId])
+  @@index([category])
+}
+
+model EmailSequence {
+  id              String            @id @default(cuid())
+  name            String
+  description     String?
+  isActive        Boolean           @default(false)
+  enrollmentCount Int               @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  steps           EmailSequenceStep[]
+  enrollments     SequenceEnrollment[]
+
+  @@index([organizationId])
+}
+
+model EmailSequenceStep {
+  id              String        @id @default(cuid())
+  subject         String
+  bodyHtml        String        @db.Text
+  bodyText        String?       @db.Text
+  delayDays       Int           @default(0)
+  delayHours      Int           @default(0)
+  sendAt          String?       // Preferred send time "09:00"
+  order           Int
+  isActive        Boolean       @default(true)
+
+  sequence        EmailSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  sequenceId      String
+
+  @@index([sequenceId])
+}
+
+model SequenceEnrollment {
+  id              String    @id @default(cuid())
+  status          EnrollmentStatus @default(ACTIVE)
+  currentStep     Int       @default(0)
+  nextSendAt      DateTime?
+  completedAt     DateTime?
+  unsubscribedAt  DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sequence        EmailSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  sequenceId      String
+  contact         Contact       @relation(fields: [contactId], references: [id])
+  contactId       String
+
+  @@unique([sequenceId, contactId])
+  @@index([sequenceId])
+  @@index([contactId])
+  @@index([nextSendAt])
+}
+
+// ============================================
+// SMS & WHATSAPP TEMPLATES
+// ============================================
+
+model SmsTemplate {
+  id              String        @id @default(cuid())
+  name            String
+  content         String        // Max 160 chars for SMS, longer for WhatsApp
+  type            MessageType   @default(SMS)
+  variables       Json?         // Available merge variables
+  isApproved      Boolean       @default(false)  // For WhatsApp templates
+  approvalStatus  String?       // pending, approved, rejected
+  whatsappId      String?       // WhatsApp template ID from Meta
+  category        String?       // For WhatsApp: MARKETING, UTILITY, AUTHENTICATION
+  language        String        @default("it")
+  isActive        Boolean       @default(true)
+  usageCount      Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  @@index([organizationId])
+  @@index([type])
+}
+
+enum MessageType {
+  SMS
+  WHATSAPP
 }
 
 // ============================================
