@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import prisma, { getPaginationParams, createPaginatedResult, handlePrismaError } from '../lib/prisma';
 
 // Portal Controller - Gestione portali clienti e fornitori
 
@@ -11,57 +14,44 @@ import crypto from 'crypto';
 export const getPortalAccesses = async (req: Request, res: Response) => {
   try {
     const { organizationId } = req.user!;
-    const { type, status, search } = req.query;
+    const { type, status, search, page = 1, pageSize = 20 } = req.query;
 
-    // Demo data
-    const accesses = [
-      {
-        id: 'pa_1',
-        type: 'CUSTOMER',
-        email: 'mario.rossi@email.it',
-        status: 'ACTIVE',
-        contact: {
-          id: 'c1',
-          firstName: 'Mario',
-          lastName: 'Rossi',
-          company: { name: 'Rossi SRL' }
-        },
-        permissions: ['VIEW_PROJECTS', 'VIEW_DOCUMENTS', 'SEND_MESSAGES'],
-        lastLoginAt: new Date(Date.now() - 86400000),
-        createdAt: new Date(Date.now() - 2592000000)
-      },
-      {
-        id: 'pa_2',
-        type: 'SUPPLIER',
-        email: 'forniture@panelsolar.it',
-        status: 'ACTIVE',
-        supplier: {
-          id: 's1',
-          name: 'Panel Solar Italia',
-          contactPerson: 'Giuseppe Verdi'
-        },
-        permissions: ['VIEW_ORDERS', 'UPDATE_DELIVERY', 'SEND_MESSAGES', 'UPLOAD_DOCUMENTS'],
-        lastLoginAt: new Date(Date.now() - 3600000),
-        createdAt: new Date(Date.now() - 5184000000)
-      },
-      {
-        id: 'pa_3',
-        type: 'CUSTOMER',
-        email: 'info@bianchi-costruzioni.it',
-        status: 'PENDING',
-        contact: {
-          id: 'c2',
-          firstName: 'Luigi',
-          lastName: 'Bianchi',
-          company: { name: 'Bianchi Costruzioni' }
-        },
-        permissions: ['VIEW_PROJECTS', 'VIEW_DOCUMENTS'],
-        invitedAt: new Date(Date.now() - 172800000),
-        createdAt: new Date(Date.now() - 172800000)
-      }
-    ];
+    const where: any = { organizationId };
+    if (type) where.type = type;
+    if (status) where.status = status;
+    if (search) {
+      where.OR = [
+        { email: { contains: search as string, mode: 'insensitive' } },
+        { contact: { firstName: { contains: search as string, mode: 'insensitive' } } },
+        { contact: { lastName: { contains: search as string, mode: 'insensitive' } } },
+        { supplier: { name: { contains: search as string, mode: 'insensitive' } } }
+      ];
+    }
 
-    res.json(accesses);
+    const { skip, take } = getPaginationParams({
+      page: Number(page),
+      pageSize: Number(pageSize)
+    });
+
+    const [accesses, total] = await Promise.all([
+      prisma.portalAccess.findMany({
+        where,
+        include: {
+          contact: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+            include: { company: { select: { id: true, name: true } } }
+          },
+          supplier: { select: { id: true, name: true, contactPerson: true, email: true } },
+          invitedBy: { select: { id: true, firstName: true, lastName: true } }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take
+      }),
+      prisma.portalAccess.count({ where })
+    ]);
+
+    res.json(createPaginatedResult(accesses, total, { page: Number(page), pageSize: Number(pageSize) }));
   } catch (error) {
     console.error('Error fetching portal accesses:', error);
     res.status(500).json({ error: 'Failed to fetch portal accesses' });
@@ -72,24 +62,23 @@ export const getPortalAccesses = async (req: Request, res: Response) => {
 export const getPortalAccess = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId } = req.user!;
 
-    res.json({
-      id,
-      type: 'CUSTOMER',
-      email: 'mario.rossi@email.it',
-      status: 'ACTIVE',
-      permissions: ['VIEW_PROJECTS', 'VIEW_DOCUMENTS', 'SEND_MESSAGES'],
-      lastLoginAt: new Date(),
-      sessions: [
-        {
-          id: 'sess_1',
-          ipAddress: '192.168.1.1',
-          userAgent: 'Mozilla/5.0...',
-          createdAt: new Date(Date.now() - 3600000),
-          expiresAt: new Date(Date.now() + 82800000)
-        }
-      ]
+    const access = await prisma.portalAccess.findFirst({
+      where: { id, organizationId },
+      include: {
+        contact: { include: { company: { select: { id: true, name: true } } } },
+        supplier: true,
+        invitedBy: { select: { id: true, firstName: true, lastName: true } },
+        sessions: { orderBy: { createdAt: 'desc' }, take: 10 }
+      }
     });
+
+    if (!access) {
+      return res.status(404).json({ error: 'Portal access not found' });
+    }
+
+    res.json(access);
   } catch (error) {
     console.error('Error fetching portal access:', error);
     res.status(500).json({ error: 'Failed to fetch portal access' });
@@ -100,15 +89,7 @@ export const getPortalAccess = async (req: Request, res: Response) => {
 export const createPortalAccess = async (req: Request, res: Response) => {
   try {
     const { organizationId, id: userId } = req.user!;
-    const {
-      type,
-      email,
-      contactId,
-      supplierId,
-      permissions,
-      expiresAt,
-      welcomeMessage
-    } = req.body;
+    const { type, email, contactId, supplierId, permissions, expiresAt, welcomeMessage } = req.body;
 
     if (!type || !email) {
       return res.status(400).json({ error: 'Type and email are required' });
@@ -122,31 +103,40 @@ export const createPortalAccess = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Supplier ID is required for supplier portal' });
     }
 
-    // Generate invitation token
+    // Check if access already exists
+    const existing = await prisma.portalAccess.findFirst({
+      where: { email, organizationId }
+    });
+
+    if (existing) {
+      return res.status(409).json({ error: 'Portal access already exists for this email' });
+    }
+
     const inviteToken = crypto.randomBytes(32).toString('hex');
-    const tokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const tokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    const portalAccess = {
-      id: `pa_${Date.now()}`,
-      type,
-      email,
-      status: 'PENDING',
-      contactId: type === 'CUSTOMER' ? contactId : null,
-      supplierId: type === 'SUPPLIER' ? supplierId : null,
-      permissions: permissions || getDefaultPermissions(type),
-      inviteToken,
-      inviteTokenExpiry: tokenExpiry,
-      invitedAt: new Date(),
-      invitedById: userId,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-      organizationId,
-      createdAt: new Date()
-    };
+    const portalAccess = await prisma.portalAccess.create({
+      data: {
+        type,
+        email,
+        status: 'PENDING',
+        contactId: type === 'CUSTOMER' ? contactId : null,
+        supplierId: type === 'SUPPLIER' ? supplierId : null,
+        permissions: permissions || getDefaultPermissions(type),
+        inviteToken,
+        inviteTokenExpiry: tokenExpiry,
+        invitedAt: new Date(),
+        invitedById: userId,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        organizationId
+      },
+      include: {
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        supplier: { select: { id: true, name: true } }
+      }
+    });
 
-    // In production:
-    // 1. Check if access already exists for this email
-    // 2. Save to database
-    // 3. Send invitation email with portal link
+    // TODO: Send invitation email with welcomeMessage
 
     res.status(201).json({
       ...portalAccess,
@@ -154,7 +144,8 @@ export const createPortalAccess = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error creating portal access:', error);
-    res.status(500).json({ error: 'Failed to create portal access' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -162,18 +153,29 @@ export const createPortalAccess = async (req: Request, res: Response) => {
 export const updatePortalAccess = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId } = req.user!;
     const { permissions, status, expiresAt } = req.body;
 
-    res.json({
-      id,
-      permissions,
-      status,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-      updatedAt: new Date()
+    const access = await prisma.portalAccess.updateMany({
+      where: { id, organizationId },
+      data: {
+        permissions,
+        status,
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+        updatedAt: new Date()
+      }
     });
+
+    if (access.count === 0) {
+      return res.status(404).json({ error: 'Portal access not found' });
+    }
+
+    const updated = await prisma.portalAccess.findUnique({ where: { id } });
+    res.json(updated);
   } catch (error) {
     console.error('Error updating portal access:', error);
-    res.status(500).json({ error: 'Failed to update portal access' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -181,8 +183,19 @@ export const updatePortalAccess = async (req: Request, res: Response) => {
 export const revokePortalAccess = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId } = req.user!;
 
-    // Invalidate all sessions for this access
+    // Invalidate all sessions
+    await prisma.portalSession.updateMany({
+      where: { portalAccessId: id },
+      data: { isValid: false }
+    });
+
+    // Update status
+    await prisma.portalAccess.updateMany({
+      where: { id, organizationId },
+      data: { status: 'SUSPENDED' }
+    });
 
     res.json({ message: 'Portal access revoked' });
   } catch (error) {
@@ -195,10 +208,25 @@ export const revokePortalAccess = async (req: Request, res: Response) => {
 export const resendInvitation = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId } = req.user!;
 
-    // Generate new token
     const inviteToken = crypto.randomBytes(32).toString('hex');
     const tokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const result = await prisma.portalAccess.updateMany({
+      where: { id, organizationId, status: 'PENDING' },
+      data: {
+        inviteToken,
+        inviteTokenExpiry: tokenExpiry,
+        invitedAt: new Date()
+      }
+    });
+
+    if (result.count === 0) {
+      return res.status(404).json({ error: 'Portal access not found or not pending' });
+    }
+
+    // TODO: Send invitation email
 
     res.json({
       message: 'Invitation resent',
@@ -224,18 +252,78 @@ export const portalLogin = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // In production: Verify credentials and check portal access status
+    const access = await prisma.portalAccess.findFirst({
+      where: {
+        email,
+        status: 'ACTIVE',
+        ...(portalType && { type: portalType })
+      },
+      include: {
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        supplier: { select: { id: true, name: true } },
+        organization: { select: { id: true, name: true } }
+      }
+    });
 
-    // Demo response
+    if (!access || !access.passwordHash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const isValid = await bcrypt.compare(password, access.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check expiry
+    if (access.expiresAt && access.expiresAt < new Date()) {
+      return res.status(401).json({ error: 'Portal access has expired' });
+    }
+
+    // Create session
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    await prisma.portalSession.create({
+      data: {
+        portalAccessId: access.id,
+        token: sessionToken,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+      }
+    });
+
+    // Update last login
+    await prisma.portalAccess.update({
+      where: { id: access.id },
+      data: { lastLoginAt: new Date() }
+    });
+
+    // Generate JWT
+    const token = jwt.sign(
+      {
+        portalAccessId: access.id,
+        type: access.type,
+        email: access.email,
+        organizationId: access.organizationId,
+        permissions: access.permissions
+      },
+      process.env.JWT_SECRET || 'portal-secret',
+      { expiresIn: '24h' }
+    );
+
+    const name = access.type === 'CUSTOMER'
+      ? `${access.contact?.firstName} ${access.contact?.lastName}`
+      : access.supplier?.name;
+
     res.json({
-      token: 'portal_jwt_token_here',
+      token,
       expiresIn: 86400,
       user: {
-        id: 'pa_1',
-        email,
-        type: portalType || 'CUSTOMER',
-        name: 'Mario Rossi',
-        permissions: ['VIEW_PROJECTS', 'VIEW_DOCUMENTS', 'SEND_MESSAGES']
+        id: access.id,
+        email: access.email,
+        type: access.type,
+        name,
+        permissions: access.permissions,
+        organization: access.organization
       }
     });
   } catch (error) {
@@ -253,11 +341,30 @@ export const acceptInvitation = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Token and password are required' });
     }
 
-    // In production:
-    // 1. Validate token and check expiry
-    // 2. Hash password
-    // 3. Update portal access status to ACTIVE
-    // 4. Clear invite token
+    const access = await prisma.portalAccess.findFirst({
+      where: {
+        inviteToken: token,
+        inviteTokenExpiry: { gt: new Date() },
+        status: 'PENDING'
+      }
+    });
+
+    if (!access) {
+      return res.status(400).json({ error: 'Invalid or expired invitation token' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    await prisma.portalAccess.update({
+      where: { id: access.id },
+      data: {
+        passwordHash,
+        status: 'ACTIVE',
+        inviteToken: null,
+        inviteTokenExpiry: null,
+        activatedAt: new Date()
+      }
+    });
 
     res.json({
       message: 'Account activated successfully',
@@ -278,6 +385,23 @@ export const portalPasswordReset = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
+    const access = await prisma.portalAccess.findFirst({
+      where: { email, status: 'ACTIVE' }
+    });
+
+    if (access) {
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      await prisma.portalAccess.update({
+        where: { id: access.id },
+        data: {
+          inviteToken: resetToken,
+          inviteTokenExpiry: new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+        }
+      });
+
+      // TODO: Send password reset email
+    }
+
     // Always return success to prevent email enumeration
     res.json({ message: 'If an account exists, a reset email has been sent' });
   } catch (error) {
@@ -296,37 +420,18 @@ export const getPortalDocuments = async (req: Request, res: Response) => {
     const { portalAccessId } = req.params;
     const { category, projectId } = req.query;
 
-    const documents = [
-      {
-        id: 'pdoc_1',
-        name: 'Preventivo_FV_2024.pdf',
-        category: 'QUOTE',
-        fileSize: 245000,
-        mimeType: 'application/pdf',
-        project: { id: 'p1', name: 'Impianto FV Residenziale' },
-        uploadedAt: new Date(Date.now() - 604800000),
-        downloadCount: 3
+    const where: any = { portalAccessId };
+    if (category) where.category = category;
+    if (projectId) where.projectId = projectId;
+
+    const documents = await prisma.portalDocument.findMany({
+      where,
+      include: {
+        document: true,
+        project: { select: { id: true, code: true, name: true } }
       },
-      {
-        id: 'pdoc_2',
-        name: 'Contratto_Fornitura.pdf',
-        category: 'CONTRACT',
-        fileSize: 512000,
-        mimeType: 'application/pdf',
-        uploadedAt: new Date(Date.now() - 1209600000),
-        downloadCount: 1
-      },
-      {
-        id: 'pdoc_3',
-        name: 'Schema_Impianto.dwg',
-        category: 'TECHNICAL',
-        fileSize: 1024000,
-        mimeType: 'application/acad',
-        project: { id: 'p1', name: 'Impianto FV Residenziale' },
-        uploadedAt: new Date(Date.now() - 259200000),
-        downloadCount: 5
-      }
-    ];
+      orderBy: { sharedAt: 'desc' }
+    });
 
     res.json(documents);
   } catch (error) {
@@ -338,28 +443,33 @@ export const getPortalDocuments = async (req: Request, res: Response) => {
 // Share document with portal
 export const shareDocument = async (req: Request, res: Response) => {
   try {
-    const { organizationId } = req.user!;
-    const { portalAccessId, documentId, category, expiresAt } = req.body;
+    const { portalAccessId, documentId, category, expiresAt, projectId } = req.body;
 
     if (!portalAccessId || !documentId) {
       return res.status(400).json({ error: 'Portal access ID and document ID are required' });
     }
 
-    const portalDocument = {
-      id: `pdoc_${Date.now()}`,
-      portalAccessId,
-      documentId,
-      category: category || 'OTHER',
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-      sharedAt: new Date()
-    };
+    const portalDocument = await prisma.portalDocument.create({
+      data: {
+        portalAccessId,
+        documentId,
+        category: category || 'OTHER',
+        projectId,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        sharedAt: new Date()
+      },
+      include: {
+        document: true
+      }
+    });
 
-    // In production: Notify portal user of new document
+    // TODO: Notify portal user
 
     res.status(201).json(portalDocument);
   } catch (error) {
     console.error('Error sharing document:', error);
-    res.status(500).json({ error: 'Failed to share document' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -367,6 +477,10 @@ export const shareDocument = async (req: Request, res: Response) => {
 export const removePortalDocument = async (req: Request, res: Response) => {
   try {
     const { portalAccessId, documentId } = req.params;
+
+    await prisma.portalDocument.deleteMany({
+      where: { portalAccessId, documentId }
+    });
 
     res.json({ message: 'Document removed from portal' });
   } catch (error) {
@@ -384,34 +498,13 @@ export const getPortalMessages = async (req: Request, res: Response) => {
   try {
     const { portalAccessId } = req.params;
 
-    const messages = [
-      {
-        id: 'pmsg_1',
-        subject: 'Aggiornamento progetto',
-        content: 'Il sopralluogo è stato programmato per lunedì prossimo.',
-        fromPortal: false,
-        senderName: 'Team Tecnico',
-        isRead: true,
-        createdAt: new Date(Date.now() - 86400000)
+    const messages = await prisma.portalMessage.findMany({
+      where: { portalAccessId },
+      include: {
+        sender: { select: { id: true, firstName: true, lastName: true } }
       },
-      {
-        id: 'pmsg_2',
-        subject: 'Re: Aggiornamento progetto',
-        content: 'Perfetto, sarò disponibile dalle 9 alle 12.',
-        fromPortal: true,
-        isRead: true,
-        createdAt: new Date(Date.now() - 72000000)
-      },
-      {
-        id: 'pmsg_3',
-        subject: 'Documenti richiesti',
-        content: 'Allego i documenti catastali richiesti.',
-        fromPortal: true,
-        attachments: [{ name: 'visura_catastale.pdf', size: 150000 }],
-        isRead: false,
-        createdAt: new Date(Date.now() - 3600000)
-      }
-    ];
+      orderBy: { createdAt: 'desc' }
+    });
 
     res.json(messages);
   } catch (error) {
@@ -431,28 +524,29 @@ export const sendPortalMessage = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Subject and content are required' });
     }
 
-    const message = {
-      id: `pmsg_${Date.now()}`,
-      portalAccessId,
-      subject,
-      content,
-      fromPortal: false,
-      senderId: userId,
-      attachments: attachmentIds || [],
-      isRead: false,
-      createdAt: new Date()
-    };
+    const message = await prisma.portalMessage.create({
+      data: {
+        portalAccessId,
+        subject,
+        content,
+        fromPortal: false,
+        senderId: userId,
+        attachments: attachmentIds || [],
+        isRead: false
+      }
+    });
 
-    // In production: Send email notification to portal user
+    // TODO: Send email notification
 
     res.status(201).json(message);
   } catch (error) {
     console.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
-// Reply from portal (portal user endpoint)
+// Reply from portal
 export const replyFromPortal = async (req: Request, res: Response) => {
   try {
     const { portalAccessId } = req.params;
@@ -462,23 +556,24 @@ export const replyFromPortal = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Content is required' });
     }
 
-    const message = {
-      id: `pmsg_${Date.now()}`,
-      portalAccessId,
-      subject: subject || 'Re: Messaggio',
-      content,
-      fromPortal: true,
-      replyToId,
-      isRead: false,
-      createdAt: new Date()
-    };
+    const message = await prisma.portalMessage.create({
+      data: {
+        portalAccessId,
+        subject: subject || 'Re: Messaggio',
+        content,
+        fromPortal: true,
+        replyToId,
+        isRead: false
+      }
+    });
 
-    // In production: Notify CRM users of new message
+    // TODO: Notify CRM users
 
     res.status(201).json(message);
   } catch (error) {
     console.error('Error sending reply:', error);
-    res.status(500).json({ error: 'Failed to send reply' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -487,41 +582,56 @@ export const markMessageRead = async (req: Request, res: Response) => {
   try {
     const { messageId } = req.params;
 
-    res.json({ id: messageId, isRead: true, readAt: new Date() });
+    const message = await prisma.portalMessage.update({
+      where: { id: messageId },
+      data: { isRead: true, readAt: new Date() }
+    });
+
+    res.json(message);
   } catch (error) {
     console.error('Error marking message as read:', error);
-    res.status(500).json({ error: 'Failed to mark as read' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
 // ============================================
-// PORTAL CUSTOMER VIEW (Customer sees their projects)
+// PORTAL CUSTOMER VIEW
 // ============================================
 
 // Get customer projects
 export const getCustomerProjects = async (req: Request, res: Response) => {
   try {
-    // Portal user context would be set by portal auth middleware
+    // In production, get portalAccessId from portal auth token
+    const { portalAccessId } = req.query;
 
-    const projects = [
-      {
-        id: 'p1',
-        code: 'PRJ-2024-001',
-        name: 'Impianto Fotovoltaico 6kW',
-        status: 'IN_PROGRESS',
-        technicalStatus: 'DESIGN',
-        installationStatus: 'NOT_STARTED',
-        progress: 35,
-        estimatedCompletionDate: new Date(Date.now() + 2592000000),
-        timeline: [
-          { phase: 'Sopralluogo', status: 'COMPLETED', date: new Date(Date.now() - 604800000) },
-          { phase: 'Progettazione', status: 'IN_PROGRESS', date: null },
-          { phase: 'Pratiche GSE', status: 'PENDING', date: null },
-          { phase: 'Installazione', status: 'PENDING', date: null },
-          { phase: 'Collaudo', status: 'PENDING', date: null }
-        ]
-      }
-    ];
+    const access = await prisma.portalAccess.findUnique({
+      where: { id: portalAccessId as string },
+      include: { contact: true }
+    });
+
+    if (!access || !access.contactId) {
+      return res.status(404).json({ error: 'Portal access not found' });
+    }
+
+    const projects = await prisma.project.findMany({
+      where: {
+        organizationId: access.organizationId,
+        contactId: access.contactId
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        status: true,
+        technicalStatus: true,
+        installationStatus: true,
+        progress: true,
+        estimatedCompletionDate: true,
+        createdAt: true
+      },
+      orderBy: { createdAt: 'desc' }
+    });
 
     res.json(projects);
   } catch (error) {
@@ -531,39 +641,33 @@ export const getCustomerProjects = async (req: Request, res: Response) => {
 };
 
 // ============================================
-// PORTAL SUPPLIER VIEW (Supplier sees their orders)
+// PORTAL SUPPLIER VIEW
 // ============================================
 
 // Get supplier orders
 export const getSupplierOrders = async (req: Request, res: Response) => {
   try {
-    const orders = [
-      {
-        id: 'ord_1',
-        orderNumber: 'PO-2024-0042',
-        status: 'CONFIRMED',
-        items: [
-          { product: 'Pannello FV 400W', quantity: 15, unitPrice: 180 },
-          { product: 'Inverter 6kW', quantity: 1, unitPrice: 1200 }
-        ],
-        totalAmount: 3900,
-        orderDate: new Date(Date.now() - 259200000),
-        expectedDeliveryDate: new Date(Date.now() + 432000000),
-        deliveryAddress: 'Via Roma 123, Milano',
-        notes: 'Consegna mattino'
+    const { portalAccessId } = req.query;
+
+    const access = await prisma.portalAccess.findUnique({
+      where: { id: portalAccessId as string },
+      include: { supplier: true }
+    });
+
+    if (!access || !access.supplierId) {
+      return res.status(404).json({ error: 'Portal access not found' });
+    }
+
+    const orders = await prisma.purchaseOrder.findMany({
+      where: {
+        organizationId: access.organizationId,
+        supplierId: access.supplierId
       },
-      {
-        id: 'ord_2',
-        orderNumber: 'PO-2024-0038',
-        status: 'DELIVERED',
-        items: [
-          { product: 'Struttura tetto piano', quantity: 2, unitPrice: 450 }
-        ],
-        totalAmount: 900,
-        orderDate: new Date(Date.now() - 1209600000),
-        deliveredDate: new Date(Date.now() - 604800000)
-      }
-    ];
+      include: {
+        items: { include: { product: { select: { name: true } } } }
+      },
+      orderBy: { orderDate: 'desc' }
+    });
 
     res.json(orders);
   } catch (error) {
@@ -572,7 +676,7 @@ export const getSupplierOrders = async (req: Request, res: Response) => {
   }
 };
 
-// Update delivery status (supplier action)
+// Update delivery status
 export const updateDeliveryStatus = async (req: Request, res: Response) => {
   try {
     const { orderId } = req.params;
@@ -582,21 +686,24 @@ export const updateDeliveryStatus = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Status is required' });
     }
 
-    const update = {
-      orderId,
-      status,
-      trackingNumber,
-      estimatedDelivery: estimatedDelivery ? new Date(estimatedDelivery) : null,
-      notes,
-      updatedAt: new Date()
-    };
+    const order = await prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data: {
+        status,
+        trackingNumber,
+        expectedDeliveryDate: estimatedDelivery ? new Date(estimatedDelivery) : undefined,
+        notes,
+        updatedAt: new Date()
+      }
+    });
 
-    // In production: Notify CRM users of delivery update
+    // TODO: Notify CRM users
 
-    res.json(update);
+    res.json(order);
   } catch (error) {
     console.error('Error updating delivery:', error);
-    res.status(500).json({ error: 'Failed to update delivery status' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -609,27 +716,74 @@ export const getPortalStats = async (req: Request, res: Response) => {
   try {
     const { organizationId } = req.user!;
 
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      customerTotal,
+      customerActive,
+      customerPending,
+      supplierTotal,
+      supplierActive,
+      supplierPending,
+      customerLogins,
+      supplierLogins,
+      messagesReceived,
+      messagesSent,
+      unreadMessages,
+      documentsShared
+    ] = await Promise.all([
+      prisma.portalAccess.count({ where: { organizationId, type: 'CUSTOMER' } }),
+      prisma.portalAccess.count({ where: { organizationId, type: 'CUSTOMER', status: 'ACTIVE' } }),
+      prisma.portalAccess.count({ where: { organizationId, type: 'CUSTOMER', status: 'PENDING' } }),
+      prisma.portalAccess.count({ where: { organizationId, type: 'SUPPLIER' } }),
+      prisma.portalAccess.count({ where: { organizationId, type: 'SUPPLIER', status: 'ACTIVE' } }),
+      prisma.portalAccess.count({ where: { organizationId, type: 'SUPPLIER', status: 'PENDING' } }),
+      prisma.portalSession.count({
+        where: {
+          portalAccess: { organizationId, type: 'CUSTOMER' },
+          createdAt: { gte: thirtyDaysAgo }
+        }
+      }),
+      prisma.portalSession.count({
+        where: {
+          portalAccess: { organizationId, type: 'SUPPLIER' },
+          createdAt: { gte: thirtyDaysAgo }
+        }
+      }),
+      prisma.portalMessage.count({
+        where: { portalAccess: { organizationId }, fromPortal: true }
+      }),
+      prisma.portalMessage.count({
+        where: { portalAccess: { organizationId }, fromPortal: false }
+      }),
+      prisma.portalMessage.count({
+        where: { portalAccess: { organizationId }, isRead: false }
+      }),
+      prisma.portalDocument.count({
+        where: { portalAccess: { organizationId } }
+      })
+    ]);
+
     res.json({
       customers: {
-        total: 45,
-        active: 38,
-        pending: 7,
-        loginsLast30Days: 156
+        total: customerTotal,
+        active: customerActive,
+        pending: customerPending,
+        loginsLast30Days: customerLogins
       },
       suppliers: {
-        total: 12,
-        active: 10,
-        pending: 2,
-        loginsLast30Days: 89
+        total: supplierTotal,
+        active: supplierActive,
+        pending: supplierPending,
+        loginsLast30Days: supplierLogins
       },
       messages: {
-        sent: 234,
-        received: 189,
-        unread: 12
+        sent: messagesSent,
+        received: messagesReceived,
+        unread: unreadMessages
       },
       documents: {
-        shared: 456,
-        downloaded: 1234
+        shared: documentsShared
       }
     });
   } catch (error) {
@@ -652,31 +806,11 @@ function getDefaultPermissions(type: string): string[] {
 }
 
 export default {
-  // Portal Access Management
-  getPortalAccesses,
-  getPortalAccess,
-  createPortalAccess,
-  updatePortalAccess,
-  revokePortalAccess,
-  resendInvitation,
-  // Portal Authentication
-  portalLogin,
-  acceptInvitation,
-  portalPasswordReset,
-  // Portal Documents
-  getPortalDocuments,
-  shareDocument,
-  removePortalDocument,
-  // Portal Messages
-  getPortalMessages,
-  sendPortalMessage,
-  replyFromPortal,
-  markMessageRead,
-  // Customer Portal
-  getCustomerProjects,
-  // Supplier Portal
-  getSupplierOrders,
-  updateDeliveryStatus,
-  // Analytics
+  getPortalAccesses, getPortalAccess, createPortalAccess, updatePortalAccess,
+  revokePortalAccess, resendInvitation,
+  portalLogin, acceptInvitation, portalPasswordReset,
+  getPortalDocuments, shareDocument, removePortalDocument,
+  getPortalMessages, sendPortalMessage, replyFromPortal, markMessageRead,
+  getCustomerProjects, getSupplierOrders, updateDeliveryStatus,
   getPortalStats
 };

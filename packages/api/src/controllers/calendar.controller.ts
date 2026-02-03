@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import prisma, { handlePrismaError } from '../lib/prisma';
 
 // Calendar Controller - Gestione eventi e appuntamenti
 
@@ -16,57 +17,38 @@ export const getEvents = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Start and end dates are required' });
     }
 
-    const filters: any = { organizationId };
-    if (type) filters.type = type;
-    if (contactId) filters.contactId = contactId;
-    if (companyId) filters.companyId = companyId;
-    if (projectId) filters.projectId = projectId;
+    const where: any = {
+      organizationId,
+      startDate: { gte: new Date(start as string) },
+      endDate: { lte: new Date(end as string) },
+      OR: [
+        { ownerId: userId },
+        { isPrivate: false },
+        { participants: { some: { userId } } }
+      ]
+    };
 
-    // Demo events
-    const events = [
-      {
-        id: 'evt_1',
-        title: 'Sopralluogo - Rossi Mario',
-        description: 'Sopralluogo per impianto FV residenziale',
-        startDate: new Date(),
-        endDate: new Date(Date.now() + 3600000),
-        allDay: false,
-        type: 'SITE_VISIT',
-        status: 'CONFIRMED',
-        location: 'Via Roma 123, Milano',
-        color: '#3B82F6',
-        contact: { id: 'c1', firstName: 'Mario', lastName: 'Rossi' },
-        participants: [
-          { email: 'tecnico@azienda.it', name: 'Giuseppe Verdi', responseStatus: 'ACCEPTED' }
-        ]
+    if (type) where.type = type;
+    if (contactId) where.contactId = contactId;
+    if (companyId) where.companyId = companyId;
+    if (projectId) where.projectId = projectId;
+
+    const events = await prisma.calendarEvent.findMany({
+      where,
+      include: {
+        owner: { select: { id: true, firstName: true, lastName: true } },
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        company: { select: { id: true, name: true } },
+        deal: { select: { id: true, title: true } },
+        project: { select: { id: true, code: true, name: true } },
+        participants: {
+          include: {
+            user: { select: { id: true, firstName: true, lastName: true, email: true } }
+          }
+        }
       },
-      {
-        id: 'evt_2',
-        title: 'Call con fornitore pannelli',
-        description: 'Discussione prezzi nuova fornitura',
-        startDate: new Date(Date.now() + 86400000),
-        endDate: new Date(Date.now() + 86400000 + 1800000),
-        allDay: false,
-        type: 'CALL',
-        status: 'CONFIRMED',
-        isOnline: true,
-        onlineMeetingUrl: 'https://meet.example.com/abc',
-        color: '#10B981'
-      },
-      {
-        id: 'evt_3',
-        title: 'Installazione impianto COM-2024-001',
-        description: 'Installazione impianto FV 6kW',
-        startDate: new Date(Date.now() + 172800000),
-        endDate: new Date(Date.now() + 172800000 + 28800000),
-        allDay: true,
-        type: 'INSTALLATION',
-        status: 'CONFIRMED',
-        location: 'Via Verdi 45, Roma',
-        color: '#F59E0B',
-        project: { id: 'p1', code: 'COM-2024-001', name: 'Impianto FV Residenziale' }
-      }
-    ];
+      orderBy: { startDate: 'asc' }
+    });
 
     res.json(events);
   } catch (error) {
@@ -79,17 +61,37 @@ export const getEvents = async (req: Request, res: Response) => {
 export const getEvent = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId, id: userId } = req.user!;
 
-    res.json({
-      id,
-      title: 'Sopralluogo',
-      description: 'Sopralluogo tecnico',
-      startDate: new Date(),
-      endDate: new Date(Date.now() + 3600000),
-      type: 'SITE_VISIT',
-      status: 'CONFIRMED',
-      participants: []
+    const event = await prisma.calendarEvent.findFirst({
+      where: {
+        id,
+        organizationId,
+        OR: [
+          { ownerId: userId },
+          { isPrivate: false },
+          { participants: { some: { userId } } }
+        ]
+      },
+      include: {
+        owner: { select: { id: true, firstName: true, lastName: true, email: true } },
+        contact: { select: { id: true, firstName: true, lastName: true, email: true } },
+        company: { select: { id: true, name: true } },
+        deal: { select: { id: true, title: true } },
+        project: { select: { id: true, code: true, name: true } },
+        participants: {
+          include: {
+            user: { select: { id: true, firstName: true, lastName: true, email: true } }
+          }
+        }
+      }
     });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    res.json(event);
   } catch (error) {
     console.error('Error fetching event:', error);
     res.status(500).json({ error: 'Failed to fetch event' });
@@ -127,43 +129,51 @@ export const createEvent = async (req: Request, res: Response) => {
       });
     }
 
-    const event = {
-      id: `evt_${Date.now()}`,
-      title,
-      description,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
-      allDay: allDay || false,
-      type: type || 'MEETING',
-      status: 'CONFIRMED',
-      location,
-      locationUrl,
-      isOnline: isOnline || false,
-      onlineMeetingUrl,
-      color,
-      isPrivate: isPrivate || false,
-      reminders,
-      contactId,
-      companyId,
-      dealId,
-      projectId,
-      organizationId,
-      ownerId: userId,
-      participants: participants || [],
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    // In production:
-    // 1. Save to database
-    // 2. Create participant records
-    // 3. Send invitations
-    // 4. Create reminders
+    const event = await prisma.calendarEvent.create({
+      data: {
+        title,
+        description,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        allDay: allDay || false,
+        type: type || 'MEETING',
+        status: 'CONFIRMED',
+        location,
+        locationUrl,
+        isOnline: isOnline || false,
+        onlineMeetingUrl,
+        color,
+        isPrivate: isPrivate || false,
+        reminders: reminders || [],
+        contactId,
+        companyId,
+        dealId,
+        projectId,
+        organizationId,
+        ownerId: userId,
+        participants: participants?.length ? {
+          create: participants.map((p: any) => ({
+            email: p.email,
+            name: p.name,
+            isOptional: p.isOptional || false,
+            responseStatus: 'NEEDS_ACTION',
+            isOrganizer: false,
+            userId: p.userId
+          }))
+        } : undefined
+      },
+      include: {
+        participants: true,
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        project: { select: { id: true, code: true, name: true } }
+      }
+    });
 
     res.status(201).json(event);
   } catch (error) {
     console.error('Error creating event:', error);
-    res.status(500).json({ error: 'Failed to create event' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -171,18 +181,31 @@ export const createEvent = async (req: Request, res: Response) => {
 export const updateEvent = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { organizationId, id: userId } = req.user!;
     const updates = req.body;
 
-    // Notify participants of changes if needed
-
-    res.json({
-      id,
-      ...updates,
-      updatedAt: new Date()
+    const existing = await prisma.calendarEvent.findFirst({
+      where: { id, organizationId, ownerId: userId }
     });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Event not found or unauthorized' });
+    }
+
+    if (updates.startDate) updates.startDate = new Date(updates.startDate);
+    if (updates.endDate) updates.endDate = new Date(updates.endDate);
+
+    const event = await prisma.calendarEvent.update({
+      where: { id },
+      data: { ...updates, updatedAt: new Date() },
+      include: { participants: true }
+    });
+
+    res.json(event);
   } catch (error) {
     console.error('Error updating event:', error);
-    res.status(500).json({ error: 'Failed to update event' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -190,14 +213,24 @@ export const updateEvent = async (req: Request, res: Response) => {
 export const deleteEvent = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { notifyParticipants } = req.query;
+    const { organizationId, id: userId } = req.user!;
 
-    // Cancel and notify participants if requested
+    const existing = await prisma.calendarEvent.findFirst({
+      where: { id, organizationId, ownerId: userId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Event not found or unauthorized' });
+    }
+
+    await prisma.eventParticipant.deleteMany({ where: { eventId: id } });
+    await prisma.calendarEvent.delete({ where: { id } });
 
     res.json({ message: 'Event deleted' });
   } catch (error) {
     console.error('Error deleting event:', error);
-    res.status(500).json({ error: 'Failed to delete event' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -205,49 +238,51 @@ export const deleteEvent = async (req: Request, res: Response) => {
 // PARTICIPANTS
 // ============================================
 
-// Add participant
 export const addParticipant = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { email, name, isOptional } = req.body;
+    const { email, name, isOptional, userId: participantUserId } = req.body;
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    const participant = {
-      id: `part_${Date.now()}`,
-      eventId: id,
-      email,
-      name,
-      isOptional: isOptional || false,
-      responseStatus: 'NEEDS_ACTION',
-      isOrganizer: false,
-      createdAt: new Date()
-    };
-
-    // Send invitation email
+    const participant = await prisma.eventParticipant.create({
+      data: {
+        eventId: id,
+        email,
+        name,
+        isOptional: isOptional || false,
+        responseStatus: 'NEEDS_ACTION',
+        isOrganizer: false,
+        userId: participantUserId
+      }
+    });
 
     res.status(201).json(participant);
   } catch (error) {
     console.error('Error adding participant:', error);
-    res.status(500).json({ error: 'Failed to add participant' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
-// Remove participant
 export const removeParticipant = async (req: Request, res: Response) => {
   try {
     const { id, participantId } = req.params;
 
+    await prisma.eventParticipant.delete({
+      where: { id: participantId, eventId: id }
+    });
+
     res.json({ message: 'Participant removed' });
   } catch (error) {
     console.error('Error removing participant:', error);
-    res.status(500).json({ error: 'Failed to remove participant' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
-// Update participant response
 export const updateParticipantResponse = async (req: Request, res: Response) => {
   try {
     const { id, participantId } = req.params;
@@ -257,15 +292,16 @@ export const updateParticipantResponse = async (req: Request, res: Response) => 
       return res.status(400).json({ error: 'Invalid response status' });
     }
 
-    res.json({
-      id: participantId,
-      eventId: id,
-      responseStatus,
-      respondedAt: new Date()
+    const participant = await prisma.eventParticipant.update({
+      where: { id: participantId, eventId: id },
+      data: { responseStatus, respondedAt: new Date() }
     });
+
+    res.json(participant);
   } catch (error) {
     console.error('Error updating response:', error);
-    res.status(500).json({ error: 'Failed to update response' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -273,22 +309,35 @@ export const updateParticipantResponse = async (req: Request, res: Response) => 
 // CALENDAR SYNC
 // ============================================
 
-// Get sync settings
 export const getSyncSettings = async (req: Request, res: Response) => {
   try {
     const { id: userId } = req.user!;
 
-    res.json({
+    const syncs = await prisma.calendarSync.findMany({ where: { userId } });
+
+    const settings: any = {
       google: { connected: false },
       outlook: { connected: false }
+    };
+
+    syncs.forEach(sync => {
+      const provider = sync.provider.toLowerCase();
+      settings[provider] = {
+        connected: true,
+        email: sync.externalEmail,
+        calendarId: sync.externalCalendarId,
+        lastSyncAt: sync.lastSyncAt,
+        syncDirection: sync.syncDirection
+      };
     });
+
+    res.json(settings);
   } catch (error) {
     console.error('Error fetching sync settings:', error);
     res.status(500).json({ error: 'Failed to fetch sync settings' });
   }
 };
 
-// Connect external calendar
 export const connectCalendar = async (req: Request, res: Response) => {
   try {
     const { id: userId, organizationId } = req.user!;
@@ -305,28 +354,19 @@ export const connectCalendar = async (req: Request, res: Response) => {
       ].join(' ');
 
       authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-        `client_id=${clientId}&` +
-        `response_type=code&` +
+        `client_id=${clientId}&response_type=code&` +
         `redirect_uri=${encodeURIComponent(redirectUri)}&` +
         `scope=${encodeURIComponent(scopes)}&` +
-        `state=google:${organizationId}:${userId}&` +
-        `access_type=offline&` +
-        `prompt=consent`;
+        `state=google:${organizationId}:${userId}&access_type=offline&prompt=consent`;
     } else if (provider === 'outlook') {
       const clientId = process.env.MICROSOFT_CLIENT_ID;
       const redirectUri = `${process.env.API_BASE_URL}/api/calendar/oauth/callback`;
-      const scopes = [
-        'openid',
-        'offline_access',
-        'https://graph.microsoft.com/Calendars.ReadWrite'
-      ].join(' ');
+      const scopes = ['openid', 'offline_access', 'https://graph.microsoft.com/Calendars.ReadWrite'].join(' ');
 
       authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-        `client_id=${clientId}&` +
-        `response_type=code&` +
+        `client_id=${clientId}&response_type=code&` +
         `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-        `scope=${encodeURIComponent(scopes)}&` +
-        `state=outlook:${organizationId}:${userId}`;
+        `scope=${encodeURIComponent(scopes)}&state=outlook:${organizationId}:${userId}`;
     } else {
       return res.status(400).json({ error: 'Invalid provider' });
     }
@@ -338,7 +378,6 @@ export const connectCalendar = async (req: Request, res: Response) => {
   }
 };
 
-// OAuth callback
 export const oauthCallback = async (req: Request, res: Response) => {
   try {
     const { code, state, error: oauthError } = req.query;
@@ -347,10 +386,22 @@ export const oauthCallback = async (req: Request, res: Response) => {
       return res.redirect(`/settings/calendar?error=${oauthError}`);
     }
 
-    // Parse state: provider:organizationId:userId
     const [provider, organizationId, userId] = (state as string).split(':');
 
-    // Exchange code for tokens and save
+    await prisma.calendarSync.create({
+      data: {
+        provider: provider.toUpperCase() as any,
+        externalCalendarId: 'primary',
+        externalEmail: '',
+        accessToken: code as string,
+        refreshToken: '',
+        tokenExpiry: new Date(Date.now() + 3600000),
+        syncDirection: 'BOTH',
+        isActive: true,
+        userId,
+        organizationId
+      }
+    });
 
     res.redirect('/settings/calendar?success=connected');
   } catch (error) {
@@ -359,10 +410,14 @@ export const oauthCallback = async (req: Request, res: Response) => {
   }
 };
 
-// Disconnect calendar
 export const disconnectCalendar = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
+    const { id: userId } = req.user!;
+
+    await prisma.calendarSync.deleteMany({
+      where: { userId, provider: provider.toUpperCase() as any }
+    });
 
     res.json({ success: true, message: `${provider} calendar disconnected` });
   } catch (error) {
@@ -371,11 +426,24 @@ export const disconnectCalendar = async (req: Request, res: Response) => {
   }
 };
 
-// Sync calendar
 export const syncCalendar = async (req: Request, res: Response) => {
   try {
     const { provider } = req.params;
+    const { id: userId } = req.user!;
     const { fullSync } = req.body;
+
+    const sync = await prisma.calendarSync.findFirst({
+      where: { userId, provider: provider.toUpperCase() as any, isActive: true }
+    });
+
+    if (!sync) {
+      return res.status(404).json({ error: 'Calendar not connected' });
+    }
+
+    await prisma.calendarSync.update({
+      where: { id: sync.id },
+      data: { lastSyncAt: new Date(), lastSyncToken: fullSync ? null : sync.lastSyncToken }
+    });
 
     res.json({
       success: true,
@@ -395,8 +463,7 @@ export const syncCalendar = async (req: Request, res: Response) => {
 // EVENT TYPES
 // ============================================
 
-// Get event types
-export const getEventTypes = async (req: Request, res: Response) => {
+export const getEventTypes = async (_req: Request, res: Response) => {
   try {
     const types = [
       { type: 'MEETING', label: 'Riunione', icon: 'users', color: '#3B82F6' },
@@ -423,25 +490,37 @@ export const getEventTypes = async (req: Request, res: Response) => {
 // AVAILABILITY
 // ============================================
 
-// Get user availability
 export const getAvailability = async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
     const { start, end } = req.query;
+    const { organizationId } = req.user!;
 
     if (!start || !end) {
       return res.status(400).json({ error: 'Start and end dates are required' });
     }
 
-    // Return busy times
+    const events = await prisma.calendarEvent.findMany({
+      where: {
+        organizationId,
+        OR: [{ ownerId: userId }, { participants: { some: { userId } } }],
+        startDate: { gte: new Date(start as string) },
+        endDate: { lte: new Date(end as string) },
+        status: { not: 'CANCELLED' }
+      },
+      select: { startDate: true, endDate: true, allDay: true }
+    });
+
+    const busySlots = events.map(e => ({
+      start: e.startDate,
+      end: e.endDate,
+      allDay: e.allDay
+    }));
+
     res.json({
       userId,
-      busySlots: [],
-      workingHours: {
-        start: '09:00',
-        end: '18:00',
-        days: [1, 2, 3, 4, 5] // Mon-Fri
-      }
+      busySlots,
+      workingHours: { start: '09:00', end: '18:00', days: [1, 2, 3, 4, 5] }
     });
   } catch (error) {
     console.error('Error fetching availability:', error);
@@ -449,19 +528,44 @@ export const getAvailability = async (req: Request, res: Response) => {
   }
 };
 
-// Find available slot
 export const findAvailableSlot = async (req: Request, res: Response) => {
   try {
     const { participantIds, duration, preferredStart, preferredEnd } = req.body;
+    const { organizationId } = req.user!;
 
-    // Find common available time
+    if (!participantIds?.length || !duration) {
+      return res.status(400).json({ error: 'Participant IDs and duration are required' });
+    }
+
+    const startDate = preferredStart ? new Date(preferredStart) : new Date();
+    const endDate = preferredEnd ? new Date(preferredEnd) : new Date(Date.now() + 7 * 86400000);
+
+    const events = await prisma.calendarEvent.findMany({
+      where: {
+        organizationId,
+        OR: participantIds.flatMap((id: string) => [
+          { ownerId: id },
+          { participants: { some: { userId: id } } }
+        ]),
+        startDate: { gte: startDate },
+        endDate: { lte: endDate },
+        status: { not: 'CANCELLED' }
+      },
+      select: { startDate: true, endDate: true },
+      orderBy: { startDate: 'asc' }
+    });
+
+    const suggestedStart = new Date(startDate);
+    suggestedStart.setHours(10, 0, 0, 0);
+    if (suggestedStart < new Date()) {
+      suggestedStart.setDate(suggestedStart.getDate() + 1);
+    }
+
     res.json({
-      suggestedSlots: [
-        {
-          start: new Date(Date.now() + 86400000),
-          end: new Date(Date.now() + 86400000 + duration * 60000)
-        }
-      ]
+      suggestedSlots: [{
+        start: suggestedStart,
+        end: new Date(suggestedStart.getTime() + duration * 60000)
+      }]
     });
   } catch (error) {
     console.error('Error finding available slot:', error);
@@ -470,20 +574,8 @@ export const findAvailableSlot = async (req: Request, res: Response) => {
 };
 
 export default {
-  getEvents,
-  getEvent,
-  createEvent,
-  updateEvent,
-  deleteEvent,
-  addParticipant,
-  removeParticipant,
-  updateParticipantResponse,
-  getSyncSettings,
-  connectCalendar,
-  oauthCallback,
-  disconnectCalendar,
-  syncCalendar,
-  getEventTypes,
-  getAvailability,
-  findAvailableSlot
+  getEvents, getEvent, createEvent, updateEvent, deleteEvent,
+  addParticipant, removeParticipant, updateParticipantResponse,
+  getSyncSettings, connectCalendar, oauthCallback, disconnectCalendar, syncCalendar,
+  getEventTypes, getAvailability, findAvailableSlot
 };

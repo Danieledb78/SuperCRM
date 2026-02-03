@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import prisma, { getPaginationParams, createPaginatedResult, handlePrismaError } from '../lib/prisma';
 
 // Notification Controller - Sistema notifiche in-app, email, push
 
@@ -12,54 +13,40 @@ export const getNotifications = async (req: Request, res: Response) => {
     const { id: userId, organizationId } = req.user!;
     const { unreadOnly, type, page = 1, pageSize = 20 } = req.query;
 
-    const filters: any = { userId, organizationId };
-    if (unreadOnly === 'true') filters.inAppRead = false;
-    if (type) filters.type = type;
+    const where: any = { userId, organizationId };
+    if (unreadOnly === 'true') where.inAppRead = false;
+    if (type) where.type = type;
 
-    // In production, fetch from database
-    const notifications = {
-      data: [
-        {
-          id: 'notif_1',
-          type: 'DEAL_STAGE_CHANGED',
-          title: 'Trattativa aggiornata',
-          message: 'La trattativa "Impianto FV 10kW" è passata a "Negoziazione"',
-          data: { entityType: 'deal', entityId: 'deal_123' },
-          inAppRead: false,
-          priority: 'NORMAL',
-          createdAt: new Date()
-        },
-        {
-          id: 'notif_2',
-          type: 'TASK_DUE_SOON',
-          title: 'Task in scadenza',
-          message: 'Il task "Preparare preventivo" scade tra 2 ore',
-          data: { entityType: 'task', entityId: 'task_456' },
-          inAppRead: false,
-          priority: 'HIGH',
-          createdAt: new Date(Date.now() - 3600000)
-        },
-        {
-          id: 'notif_3',
-          type: 'PROJECT_STATUS_CHANGED',
-          title: 'Commessa aggiornata',
-          message: 'La commessa COM-2024-001 è ora "In Corso"',
-          data: { entityType: 'project', entityId: 'proj_789' },
-          inAppRead: true,
-          priority: 'NORMAL',
-          createdAt: new Date(Date.now() - 86400000)
+    const { skip, take } = getPaginationParams({
+      page: Number(page),
+      pageSize: Number(pageSize)
+    });
+
+    const [notifications, total, unreadCount] = await Promise.all([
+      prisma.notification.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        include: {
+          contact: { select: { id: true, firstName: true, lastName: true } },
+          company: { select: { id: true, name: true } },
+          deal: { select: { id: true, title: true } },
+          project: { select: { id: true, code: true, name: true } },
         }
-      ],
-      pagination: {
-        total: 3,
-        page: Number(page),
-        pageSize: Number(pageSize),
-        totalPages: 1
-      },
-      unreadCount: 2
-    };
+      }),
+      prisma.notification.count({ where }),
+      prisma.notification.count({
+        where: { userId, organizationId, inAppRead: false }
+      })
+    ]);
 
-    res.json(notifications);
+    const result = createPaginatedResult(notifications, total, {
+      page: Number(page),
+      pageSize: Number(pageSize)
+    });
+
+    res.json({ ...result, unreadCount });
   } catch (error) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -69,15 +56,25 @@ export const getNotifications = async (req: Request, res: Response) => {
 // Get unread count
 export const getUnreadCount = async (req: Request, res: Response) => {
   try {
-    const { id: userId } = req.user!;
+    const { id: userId, organizationId } = req.user!;
 
-    res.json({
-      count: 2,
-      byType: {
-        DEAL_STAGE_CHANGED: 1,
-        TASK_DUE_SOON: 1
-      }
-    });
+    const [count, byType] = await Promise.all([
+      prisma.notification.count({
+        where: { userId, organizationId, inAppRead: false }
+      }),
+      prisma.notification.groupBy({
+        by: ['type'],
+        where: { userId, organizationId, inAppRead: false },
+        _count: true
+      })
+    ]);
+
+    const typeCount = byType.reduce((acc, item) => {
+      acc[item.type] = item._count;
+      return acc;
+    }, {} as Record<string, number>);
+
+    res.json({ count, byType: typeCount });
   } catch (error) {
     console.error('Error getting unread count:', error);
     res.status(500).json({ error: 'Failed to get unread count' });
@@ -88,28 +85,46 @@ export const getUnreadCount = async (req: Request, res: Response) => {
 export const markAsRead = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { id: userId } = req.user!;
 
-    res.json({
-      id,
-      inAppRead: true,
-      inAppReadAt: new Date()
+    const notification = await prisma.notification.updateMany({
+      where: { id, userId },
+      data: {
+        inAppRead: true,
+        inAppReadAt: new Date()
+      }
     });
+
+    if (notification.count === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ id, inAppRead: true, inAppReadAt: new Date() });
   } catch (error) {
     console.error('Error marking notification as read:', error);
-    res.status(500).json({ error: 'Failed to mark as read' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
 // Mark all as read
 export const markAllAsRead = async (req: Request, res: Response) => {
   try {
-    const { id: userId } = req.user!;
+    const { id: userId, organizationId } = req.user!;
     const { type } = req.query;
 
-    res.json({
-      success: true,
-      markedCount: 2
+    const where: any = { userId, organizationId, inAppRead: false };
+    if (type) where.type = type;
+
+    const result = await prisma.notification.updateMany({
+      where,
+      data: {
+        inAppRead: true,
+        inAppReadAt: new Date()
+      }
     });
+
+    res.json({ success: true, markedCount: result.count });
   } catch (error) {
     console.error('Error marking all as read:', error);
     res.status(500).json({ error: 'Failed to mark all as read' });
@@ -120,11 +135,17 @@ export const markAllAsRead = async (req: Request, res: Response) => {
 export const deleteNotification = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { id: userId } = req.user!;
+
+    await prisma.notification.deleteMany({
+      where: { id, userId }
+    });
 
     res.json({ message: 'Notification deleted' });
   } catch (error) {
     console.error('Error deleting notification:', error);
-    res.status(500).json({ error: 'Failed to delete notification' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -137,8 +158,12 @@ export const getPreferences = async (req: Request, res: Response) => {
   try {
     const { id: userId } = req.user!;
 
-    const preferences = {
-      // Default preferences for all notification types
+    const preferences = await prisma.notificationPreference.findMany({
+      where: { userId }
+    });
+
+    // Build preferences object with defaults
+    const defaultPreferences = {
       DEAL_STAGE_CHANGED: { enabled: true, channels: ['IN_APP', 'EMAIL'] },
       DEAL_WON: { enabled: true, channels: ['IN_APP', 'EMAIL', 'PUSH'] },
       DEAL_LOST: { enabled: true, channels: ['IN_APP', 'EMAIL'] },
@@ -152,15 +177,29 @@ export const getPreferences = async (req: Request, res: Response) => {
       EMAIL_RECEIVED: { enabled: true, channels: ['IN_APP'] },
       STOCK_LOW: { enabled: true, channels: ['IN_APP', 'EMAIL'] },
       SYSTEM_ALERT: { enabled: true, channels: ['IN_APP', 'EMAIL', 'PUSH'] },
-      // Quiet hours
-      quietHours: {
-        enabled: false,
-        start: '22:00',
-        end: '08:00'
-      }
     };
 
-    res.json(preferences);
+    // Override with user preferences
+    preferences.forEach(pref => {
+      (defaultPreferences as any)[pref.type] = {
+        enabled: pref.enabled,
+        channels: pref.channels
+      };
+    });
+
+    // Get quiet hours setting
+    const quietHoursPref = preferences.find(p => p.type === 'QUIET_HOURS');
+    const quietHours = quietHoursPref ? {
+      enabled: quietHoursPref.enabled,
+      start: (quietHoursPref as any).quietHoursStart || '22:00',
+      end: (quietHoursPref as any).quietHoursEnd || '08:00'
+    } : {
+      enabled: false,
+      start: '22:00',
+      end: '08:00'
+    };
+
+    res.json({ ...defaultPreferences, quietHours });
   } catch (error) {
     console.error('Error fetching preferences:', error);
     res.status(500).json({ error: 'Failed to fetch preferences' });
@@ -173,11 +212,30 @@ export const updatePreferences = async (req: Request, res: Response) => {
     const { id: userId } = req.user!;
     const preferences = req.body;
 
-    res.json({
-      success: true,
-      preferences,
-      updatedAt: new Date()
+    // Update each preference
+    const updates = Object.entries(preferences).map(async ([type, config]: [string, any]) => {
+      if (type === 'quietHours') return;
+
+      return prisma.notificationPreference.upsert({
+        where: {
+          userId_type: { userId, type: type as any }
+        },
+        create: {
+          userId,
+          type: type as any,
+          enabled: config.enabled,
+          channels: config.channels,
+        },
+        update: {
+          enabled: config.enabled,
+          channels: config.channels,
+        }
+      });
     });
+
+    await Promise.all(updates.filter(Boolean));
+
+    res.json({ success: true, preferences, updatedAt: new Date() });
   } catch (error) {
     console.error('Error updating preferences:', error);
     res.status(500).json({ error: 'Failed to update preferences' });
@@ -200,16 +258,30 @@ export const subscribePush = async (req: Request, res: Response) => {
       });
     }
 
-    const subscription = {
-      id: `push_${Date.now()}`,
-      endpoint,
-      p256dh,
-      auth,
-      userAgent,
-      isActive: true,
-      userId,
-      createdAt: new Date()
-    };
+    // Check if subscription already exists
+    const existing = await prisma.pushSubscription.findFirst({
+      where: { endpoint }
+    });
+
+    if (existing) {
+      // Update existing subscription
+      const updated = await prisma.pushSubscription.update({
+        where: { id: existing.id },
+        data: { p256dh, auth, userAgent, isActive: true, userId }
+      });
+      return res.json(updated);
+    }
+
+    const subscription = await prisma.pushSubscription.create({
+      data: {
+        endpoint,
+        p256dh,
+        auth,
+        userAgent,
+        isActive: true,
+        userId
+      }
+    });
 
     res.status(201).json(subscription);
   } catch (error) {
@@ -222,6 +294,20 @@ export const subscribePush = async (req: Request, res: Response) => {
 export const unsubscribePush = async (req: Request, res: Response) => {
   try {
     const { endpoint } = req.body;
+    const { id: userId } = req.user!;
+
+    if (endpoint) {
+      await prisma.pushSubscription.updateMany({
+        where: { endpoint, userId },
+        data: { isActive: false }
+      });
+    } else {
+      // Unsubscribe all for user
+      await prisma.pushSubscription.updateMany({
+        where: { userId },
+        data: { isActive: false }
+      });
+    }
 
     res.json({ success: true, message: 'Unsubscribed from push notifications' });
   } catch (error) {
@@ -246,7 +332,11 @@ export const createNotification = async (req: Request, res: Response) => {
       data,
       channels,
       priority,
-      scheduledFor
+      scheduledFor,
+      contactId,
+      companyId,
+      dealId,
+      projectId
     } = req.body;
 
     if (!userId || !type || !title || !message) {
@@ -255,30 +345,35 @@ export const createNotification = async (req: Request, res: Response) => {
       });
     }
 
-    const notification = {
-      id: `notif_${Date.now()}`,
-      type,
-      title,
-      message,
-      data,
-      channels: channels || ['IN_APP'],
-      priority: priority || 'NORMAL',
-      scheduledFor,
-      inAppRead: false,
-      userId,
-      organizationId,
-      createdAt: new Date()
-    };
+    const notification = await prisma.notification.create({
+      data: {
+        type,
+        title,
+        message,
+        data: data || {},
+        channels: channels || ['IN_APP'],
+        priority: priority || 'NORMAL',
+        scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
+        inAppRead: false,
+        userId,
+        organizationId,
+        contactId,
+        companyId,
+        dealId,
+        projectId
+      }
+    });
 
-    // In production:
-    // 1. Save to database
-    // 2. Send through configured channels (email, push, etc.)
-    // 3. Use a queue for scheduled notifications
+    // TODO: In production:
+    // 1. Send email if EMAIL in channels
+    // 2. Send push notification if PUSH in channels
+    // 3. Queue scheduled notifications
 
     res.status(201).json(notification);
   } catch (error) {
     console.error('Error creating notification:', error);
-    res.status(500).json({ error: 'Failed to create notification' });
+    const { status, message } = handlePrismaError(error);
+    res.status(status).json({ error: message });
   }
 };
 
@@ -286,7 +381,7 @@ export const createNotification = async (req: Request, res: Response) => {
 export const sendBulkNotification = async (req: Request, res: Response) => {
   try {
     const { organizationId } = req.user!;
-    const { userIds, type, title, message, data, channels } = req.body;
+    const { userIds, type, title, message, data, channels, priority } = req.body;
 
     if (!userIds?.length || !type || !title || !message) {
       return res.status(400).json({
@@ -294,9 +389,23 @@ export const sendBulkNotification = async (req: Request, res: Response) => {
       });
     }
 
+    const notifications = await prisma.notification.createMany({
+      data: userIds.map((userId: string) => ({
+        type,
+        title,
+        message,
+        data: data || {},
+        channels: channels || ['IN_APP'],
+        priority: priority || 'NORMAL',
+        inAppRead: false,
+        userId,
+        organizationId
+      }))
+    });
+
     res.json({
       success: true,
-      sentCount: userIds.length,
+      sentCount: notifications.count,
       sentAt: new Date()
     });
   } catch (error) {
@@ -310,7 +419,7 @@ export const sendBulkNotification = async (req: Request, res: Response) => {
 // ============================================
 
 // Get available notification types
-export const getNotificationTypes = async (req: Request, res: Response) => {
+export const getNotificationTypes = async (_req: Request, res: Response) => {
   try {
     const types = [
       { type: 'SYSTEM_ALERT', category: 'system', label: 'Avvisi di Sistema' },
