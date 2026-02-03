@@ -42,6 +42,11 @@ import aiRoutes from './routes/ai.routes.js';
 import webhookRoutes from './routes/webhook.routes.js';
 import pricelistRoutes from './routes/pricelist.routes.js';
 
+// Notifications, Calendar, Portal
+import notificationRoutes from './routes/notification.routes.js';
+import calendarRoutes from './routes/calendar.routes.js';
+import portalRoutes from './routes/portal.routes.js';
+
 dotenv.config();
 
 const app = express();
@@ -96,6 +101,11 @@ app.use('/api/email', emailRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/pricelists', pricelistRoutes);
+
+// Notifications, Calendar, Portal
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/calendar', calendarRoutes);
+app.use('/api/portal', portalRoutes);
 
 // Error handling
 app.use(notFoundHandler);

@@ -25,6 +25,9 @@ import {
   ChevronDown,
   Sun,
   LogOut,
+  Bell,
+  Calendar,
+  Globe,
 } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { getInitials } from '@/lib/utils';
@@ -70,6 +73,11 @@ const navigation: NavItem[] = [
     icon: FolderKanban,
   },
   {
+    title: 'Calendario',
+    href: '/calendar',
+    icon: Calendar,
+  },
+  {
     title: 'Acquisti',
     href: '/purchasing',
     icon: Truck,
@@ -103,6 +111,11 @@ const navigation: NavItem[] = [
       { title: 'AI Assistant', href: '/integrations/ai', icon: Bot },
       { title: 'Webhooks', href: '/integrations/webhooks', icon: Webhook },
     ],
+  },
+  {
+    title: 'Portali',
+    href: '/portal',
+    icon: Globe,
   },
   {
     title: 'Impostazioni',

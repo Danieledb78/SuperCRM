@@ -65,6 +65,19 @@ model User {
   incomingWebhooks      IncomingWebhook[]   @relation("IncomingWebhookCreator")
   apiKeys               ApiKey[]            @relation("ApiKeyCreator")
 
+  // Notifications & Calendar
+  notifications         Notification[]      @relation("UserNotifications")
+  notificationPrefs     NotificationPreference[] @relation("UserNotificationPreferences")
+  pushSubscriptions     PushSubscription[]  @relation("UserPushSubscriptions")
+  ownedEvents           CalendarEvent[]     @relation("EventOwner")
+  eventParticipations   EventParticipant[]  @relation("UserEventParticipations")
+  calendarSyncs         CalendarSync[]      @relation("UserCalendarSyncs")
+
+  // Portal
+  portalInvitations     PortalAccess[]      @relation("PortalInvitations")
+  portalDocuments       PortalDocument[]    @relation("PortalDocumentUploader")
+  staffPortalMessages   PortalMessage[]     @relation("StaffPortalMessages")
+
   @@index([organizationId])
   @@index([email])
 }
@@ -165,6 +178,16 @@ model Organization {
   incomingWebhooks      IncomingWebhook[]
   apiKeys               ApiKey[]
 
+  // Notifications & Calendar
+  notifications         Notification[]
+  calendarEvents        CalendarEvent[]
+  calendarSyncs         CalendarSync[]
+
+  // Portal
+  portalAccess          PortalAccess[]
+  portalDocuments       PortalDocument[]
+  portalMessages        PortalMessage[]
+
   @@index([slug])
 }
 
@@ -235,6 +258,12 @@ model Contact {
 
   // Email integration
   linkedEmails    Email[]   @relation("ContactEmails")
+
+  // Calendar & Portal
+  calendarEvents  CalendarEvent[] @relation("ContactEvents")
+  portalAccess    PortalAccess[]  @relation("ContactPortalAccess")
+  portalDocuments PortalDocument[] @relation("ContactPortalDocuments")
+  portalMessages  PortalMessage[] @relation("ContactPortalMessages")
 
   @@index([organizationId])
   @@index([ownerId])
@@ -317,6 +346,9 @@ model Company {
 
   // Email integration
   linkedEmails    Email[]   @relation("CompanyEmails")
+
+  // Calendar
+  calendarEvents  CalendarEvent[] @relation("CompanyEvents")
 
   @@index([organizationId])
   @@index([ownerId])
@@ -403,6 +435,9 @@ model Deal {
 
   // Email integration
   linkedEmails    Email[]   @relation("DealEmails")
+
+  // Calendar
+  calendarEvents  CalendarEvent[] @relation("DealEvents")
 
   @@index([organizationId])
   @@index([pipelineId])
@@ -1114,6 +1149,11 @@ model Supplier {
   // External price lists
   priceLists      SupplierPriceList[]
 
+  // Portal
+  portalAccess    PortalAccess[]  @relation("SupplierPortalAccess")
+  portalDocuments PortalDocument[] @relation("SupplierPortalDocuments")
+  portalMessages  PortalMessage[] @relation("SupplierPortalMessages")
+
   @@index([organizationId])
   @@index([category])
   @@index([name])
@@ -1489,6 +1529,11 @@ model Project {
 
   // Email integration
   linkedEmails    Email[]       @relation("ProjectEmails")
+
+  // Calendar & Portal
+  calendarEvents  CalendarEvent[] @relation("ProjectEvents")
+  portalDocuments PortalDocument[] @relation("ProjectPortalDocuments")
+  portalMessages  PortalMessage[] @relation("ProjectPortalMessages")
 
   @@unique([organizationId, code])
   @@index([organizationId])
@@ -2726,4 +2771,529 @@ model ApiKey {
 
   @@index([organizationId])
   @@index([keyPrefix])
+}
+
+// ============================================
+// NOTIFICATION SYSTEM
+// Sistema notifiche in-app, email, push
+// ============================================
+
+model Notification {
+  id              String            @id @default(cuid())
+  type            NotificationType
+  title           String
+  message         String
+  data            Json?             // Additional data (entity type, id, etc.)
+
+  // Delivery channels
+  channels        NotificationChannel[] @default([IN_APP])
+
+  // Status per channel
+  inAppRead       Boolean           @default(false)
+  inAppReadAt     DateTime?
+  emailSent       Boolean           @default(false)
+  emailSentAt     DateTime?
+  pushSent        Boolean           @default(false)
+  pushSentAt      DateTime?
+
+  // Scheduling
+  scheduledFor    DateTime?
+  expiresAt       DateTime?
+
+  // Priority
+  priority        NotificationPriority @default(NORMAL)
+
+  createdAt       DateTime          @default(now())
+
+  // Relations
+  user            User              @relation("UserNotifications", fields: [userId], references: [id])
+  userId          String
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  @@index([userId, inAppRead])
+  @@index([organizationId])
+  @@index([createdAt])
+}
+
+enum NotificationType {
+  // System
+  SYSTEM_ALERT
+  SYSTEM_UPDATE
+
+  // CRM
+  CONTACT_ASSIGNED
+  CONTACT_UPDATED
+  DEAL_ASSIGNED
+  DEAL_STAGE_CHANGED
+  DEAL_WON
+  DEAL_LOST
+
+  // Tasks & Activities
+  TASK_ASSIGNED
+  TASK_DUE_SOON
+  TASK_OVERDUE
+  ACTIVITY_REMINDER
+  APPOINTMENT_REMINDER
+
+  // Projects
+  PROJECT_ASSIGNED
+  PROJECT_STATUS_CHANGED
+  PROJECT_PHASE_COMPLETED
+  PROJECT_DEADLINE_APPROACHING
+
+  // Sales
+  QUOTE_APPROVED
+  QUOTE_REJECTED
+  INVOICE_PAID
+  INVOICE_OVERDUE
+
+  // Inventory
+  STOCK_LOW
+  STOCK_OUT
+  ORDER_RECEIVED
+  DDT_CREATED
+
+  // Email
+  EMAIL_RECEIVED
+  EMAIL_LINKED
+
+  // Integration
+  INTEGRATION_ERROR
+  SYNC_COMPLETED
+  WEBHOOK_FAILED
+
+  // Custom
+  CUSTOM
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+  SMS
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+// Notification preferences per user
+model NotificationPreference {
+  id              String            @id @default(cuid())
+
+  // Notification type settings
+  notificationType NotificationType
+  enabled         Boolean           @default(true)
+  channels        NotificationChannel[] @default([IN_APP])
+
+  // Quiet hours
+  quietHoursEnabled Boolean         @default(false)
+  quietHoursStart String?           // HH:mm format
+  quietHoursEnd   String?           // HH:mm format
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  user            User              @relation("UserNotificationPreferences", fields: [userId], references: [id])
+  userId          String
+
+  @@unique([userId, notificationType])
+  @@index([userId])
+}
+
+// Push notification subscriptions (for web push)
+model PushSubscription {
+  id              String    @id @default(cuid())
+  endpoint        String
+  p256dh          String    // Public key
+  auth            String    // Auth secret
+  userAgent       String?
+
+  isActive        Boolean   @default(true)
+  lastUsedAt      DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user            User      @relation("UserPushSubscriptions", fields: [userId], references: [id])
+  userId          String
+
+  @@unique([userId, endpoint])
+  @@index([userId])
+}
+
+// ============================================
+// CALENDAR & APPOINTMENTS
+// Calendario e appuntamenti
+// ============================================
+
+model CalendarEvent {
+  id              String          @id @default(cuid())
+  title           String
+  description     String?
+
+  // Timing
+  startDate       DateTime
+  endDate         DateTime
+  allDay          Boolean         @default(false)
+  timezone        String          @default("Europe/Rome")
+
+  // Recurrence
+  isRecurring     Boolean         @default(false)
+  recurrenceRule  String?         // iCal RRULE format
+  recurrenceEnd   DateTime?
+
+  // Location
+  location        String?
+  locationUrl     String?         // Google Maps, etc.
+  isOnline        Boolean         @default(false)
+  onlineMeetingUrl String?        // Zoom, Teams, etc.
+
+  // Type & Status
+  type            EventType       @default(MEETING)
+  status          EventStatus     @default(CONFIRMED)
+
+  // Colors & Display
+  color           String?
+  isPrivate       Boolean         @default(false)
+
+  // Reminders
+  reminders       Json?           // Array of reminder settings
+
+  // External sync
+  externalId      String?         // ID from external calendar
+  externalSource  String?         // google, outlook, etc.
+  lastSyncAt      DateTime?
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  owner           User            @relation("EventOwner", fields: [ownerId], references: [id])
+  ownerId         String
+
+  // CRM Links
+  contact         Contact?        @relation("ContactEvents", fields: [contactId], references: [id])
+  contactId       String?
+  company         Company?        @relation("CompanyEvents", fields: [companyId], references: [id])
+  companyId       String?
+  deal            Deal?           @relation("DealEvents", fields: [dealId], references: [id])
+  dealId          String?
+  project         Project?        @relation("ProjectEvents", fields: [projectId], references: [id])
+  projectId       String?
+
+  // Participants
+  participants    EventParticipant[]
+
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([startDate, endDate])
+  @@index([contactId])
+  @@index([companyId])
+}
+
+enum EventType {
+  MEETING
+  CALL
+  SITE_VISIT       // Sopralluogo
+  INSTALLATION
+  MAINTENANCE
+  TRAINING
+  DEMO
+  FOLLOW_UP
+  DEADLINE
+  REMINDER
+  OTHER
+}
+
+enum EventStatus {
+  TENTATIVE
+  CONFIRMED
+  CANCELLED
+}
+
+model EventParticipant {
+  id              String          @id @default(cuid())
+
+  // Participant info
+  email           String
+  name            String?
+
+  // Response
+  responseStatus  ParticipantResponse @default(NEEDS_ACTION)
+  respondedAt     DateTime?
+
+  // Role
+  isOrganizer     Boolean         @default(false)
+  isOptional      Boolean         @default(false)
+
+  // Notifications
+  notified        Boolean         @default(false)
+  notifiedAt      DateTime?
+
+  createdAt       DateTime        @default(now())
+
+  // Relations
+  event           CalendarEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventId         String
+  user            User?           @relation("UserEventParticipations", fields: [userId], references: [id])
+  userId          String?
+
+  @@unique([eventId, email])
+  @@index([eventId])
+  @@index([userId])
+}
+
+enum ParticipantResponse {
+  NEEDS_ACTION
+  ACCEPTED
+  DECLINED
+  TENTATIVE
+}
+
+// Calendar sync settings
+model CalendarSync {
+  id              String    @id @default(cuid())
+  provider        String    // google, outlook
+
+  // OAuth
+  accessToken     String?
+  refreshToken    String?
+  tokenExpiresAt  DateTime?
+
+  // Sync settings
+  calendarId      String?   // External calendar ID to sync
+  syncEnabled     Boolean   @default(true)
+  lastSyncAt      DateTime?
+  syncDirection   String    @default("both") // in, out, both
+
+  // Filters
+  syncPastDays    Int       @default(30)
+  syncFutureDays  Int       @default(90)
+
+  isActive        Boolean   @default(true)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user            User      @relation("UserCalendarSyncs", fields: [userId], references: [id])
+  userId          String
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+// ============================================
+// CUSTOMER & SUPPLIER PORTALS
+// Portali esterni per clienti e fornitori
+// ============================================
+
+// Portal invitation/access
+model PortalAccess {
+  id              String        @id @default(cuid())
+  type            PortalType
+
+  // Access credentials
+  email           String
+  passwordHash    String?
+
+  // Invitation
+  inviteToken     String?       @unique
+  inviteExpiresAt DateTime?
+  inviteSentAt    DateTime?
+
+  // Status
+  status          PortalAccessStatus @default(PENDING)
+  activatedAt     DateTime?
+  lastLoginAt     DateTime?
+  loginCount      Int           @default(0)
+
+  // Permissions
+  permissions     String[]      @default([])
+
+  // Restrictions
+  allowedIps      String[]      @default([])
+  expiresAt       DateTime?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  organization    Organization  @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  // Link to contact or supplier
+  contact         Contact?      @relation("ContactPortalAccess", fields: [contactId], references: [id])
+  contactId       String?
+  supplier        Supplier?     @relation("SupplierPortalAccess", fields: [supplierId], references: [id])
+  supplierId      String?
+
+  // Inviter
+  invitedBy       User?         @relation("PortalInvitations", fields: [invitedById], references: [id])
+  invitedById     String?
+
+  // Sessions
+  sessions        PortalSession[]
+
+  // Messages
+  messages        PortalMessage[]
+
+  @@unique([organizationId, email, type])
+  @@index([organizationId])
+  @@index([email])
+  @@index([inviteToken])
+}
+
+enum PortalType {
+  CUSTOMER
+  SUPPLIER
+}
+
+enum PortalAccessStatus {
+  PENDING       // Invited but not activated
+  ACTIVE        // Can access portal
+  SUSPENDED     // Temporarily disabled
+  REVOKED       // Permanently disabled
+}
+
+model PortalSession {
+  id              String    @id @default(cuid())
+  token           String    @unique
+
+  // Session info
+  ipAddress       String?
+  userAgent       String?
+
+  // Validity
+  expiresAt       DateTime
+  lastActivityAt  DateTime  @default(now())
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  portalAccess    PortalAccess @relation(fields: [portalAccessId], references: [id], onDelete: Cascade)
+  portalAccessId  String
+
+  @@index([portalAccessId])
+  @@index([token])
+}
+
+// Customer portal document sharing
+model PortalDocument {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+
+  // File info
+  filePath        String
+  fileSize        Int?
+  mimeType        String?
+
+  // Document type
+  documentType    PortalDocumentType
+
+  // Visibility
+  isPublic        Boolean   @default(false) // Visible to all portal users
+
+  // Access tracking
+  viewCount       Int       @default(0)
+  lastViewedAt    DateTime?
+  downloadCount   Int       @default(0)
+  lastDownloadedAt DateTime?
+
+  // Expiration
+  expiresAt       DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  uploadedBy      User      @relation("PortalDocumentUploader", fields: [uploadedById], references: [id])
+  uploadedById    String
+
+  // Link to entities
+  contact         Contact?  @relation("ContactPortalDocuments", fields: [contactId], references: [id])
+  contactId       String?
+  supplier        Supplier? @relation("SupplierPortalDocuments", fields: [supplierId], references: [id])
+  supplierId      String?
+  project         Project?  @relation("ProjectPortalDocuments", fields: [projectId], references: [id])
+  projectId       String?
+
+  @@index([organizationId])
+  @@index([contactId])
+  @@index([supplierId])
+}
+
+enum PortalDocumentType {
+  QUOTE
+  INVOICE
+  CONTRACT
+  DDT
+  TECHNICAL_SPEC
+  MANUAL
+  CERTIFICATE
+  PHOTO
+  OTHER
+}
+
+// Portal messages/communication
+model PortalMessage {
+  id              String    @id @default(cuid())
+  subject         String?
+  content         String
+
+  // Sender/Recipient
+  isFromPortal    Boolean   // true = from portal user, false = from staff
+
+  // Status
+  isRead          Boolean   @default(false)
+  readAt          DateTime?
+
+  // Attachments
+  attachments     Json?     // Array of file references
+
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+
+  // Portal user
+  portalAccess    PortalAccess? @relation(fields: [portalAccessId], references: [id])
+  portalAccessId  String?
+
+  // Staff user (if message from staff)
+  staffUser       User?     @relation("StaffPortalMessages", fields: [staffUserId], references: [id])
+  staffUserId     String?
+
+  // Thread
+  parentMessage   PortalMessage? @relation("MessageThread", fields: [parentMessageId], references: [id])
+  parentMessageId String?
+  replies         PortalMessage[] @relation("MessageThread")
+
+  // Link to entities
+  contact         Contact?  @relation("ContactPortalMessages", fields: [contactId], references: [id])
+  contactId       String?
+  supplier        Supplier? @relation("SupplierPortalMessages", fields: [supplierId], references: [id])
+  supplierId      String?
+  project         Project?  @relation("ProjectPortalMessages", fields: [projectId], references: [id])
+  projectId       String?
+
+  @@index([organizationId])
+  @@index([portalAccessId])
+  @@index([contactId])
+  @@index([supplierId])
 }
